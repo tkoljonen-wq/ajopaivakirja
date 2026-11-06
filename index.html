@@ -117,6 +117,22 @@
     transition: transform .25s; z-index: 10; max-width: calc(100vw - 32px); text-align: center;
   }
   #toast.show { transform: translateX(-50%) translateY(0); }
+  .tabs { display: flex; gap: 6px; max-width: 560px; margin: 0 auto; padding: 6px 16px 0; }
+  .tabs button { flex: 1; background: var(--card); color: var(--muted); font-weight: 600; border-bottom: 3px solid transparent; border-radius: 10px 10px 4px 4px; }
+  .tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); background: var(--card2); }
+  .srow { padding: 12px 0; border-top: 1px solid var(--line); }
+  .srow:first-child { border-top: 0; }
+  .srow .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+  .srow .name { font-weight: 600; overflow-wrap: anywhere; }
+  .srow .val { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .srow .val b { font-size: 18px; }
+  .srow .val span { color: var(--muted); margin-left: 8px; display: inline-block; min-width: 3.6em; text-align: right; }
+  .srow .sub { font-size: 13px; color: var(--muted); }
+  .srow .bar { height: 8px; margin-top: 6px; }
+  .srow .bar > div { background: var(--accent); }
+  .srow.other .bar > div { background: var(--muted); }
+  .srow.gap { opacity: .75; }
+  .srow.gap .bar > div { background: var(--line); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -126,7 +142,22 @@
   <button id="installBtn" class="small" hidden>Asenna</button>
 </header>
 
+<nav class="tabs" role="tablist">
+  <button role="tab" id="tabMain" aria-selected="true">Ajot</button>
+  <button role="tab" id="tabStats" aria-selected="false">Tilastot</button>
+</nav>
+
 <main>
+  <!-- Tilastot -->
+  <div id="viewStats" hidden>
+    <section class="card">
+      <h2>Ajot selitteittäin</h2>
+      <div class="hint" style="margin-top:-6px;margin-bottom:6px" id="statsBase"></div>
+      <div id="statsList"></div>
+    </section>
+  </div>
+
+  <div id="viewMain">
   <!-- Yhteenveto -->
   <section class="card">
     <h2>Pian ajot</h2>
@@ -207,6 +238,7 @@
       </div>
     </details>
   </section>
+  </div>
 </main>
 
 <!-- Muokkausdialogi -->
@@ -435,7 +467,62 @@
 
     renderList();
     renderPresets();
+    renderStats();
   }
+
+  // ---------- Tilastot ----------
+  function renderStats() {
+    const s = stats();
+    const total = s.total;
+    const presetKey = (x) => x.trim().toLocaleLowerCase('fi');
+    const groups = new Map(db.presets.map((p) => [presetKey(p), { name: p, km: 0, n: 0 }]));
+    const other = { name: 'Muut ajot', km: 0, n: 0 };
+    let recorded = 0;
+    db.trips.forEach((t) => {
+      if (t.end == null) return;
+      const km = t.end - t.start;
+      recorded += km;
+      const g = (t.note && groups.get(presetKey(t.note))) || other;
+      g.km += km; g.n++;
+    });
+    const rows = [...groups.values()].sort((a, b) => b.km - a.km || a.name.localeCompare(b.name, 'fi'));
+
+    const box = $('statsList');
+    box.innerHTML = '';
+    $('statsBase').textContent = total > 0
+      ? 'Prosentit kokonaisajosta ' + fmt(total) + ' km (mittarin ensimmäinen ja viimeinen lukema).'
+      : 'Ei vielä tarpeeksi lukemia tilastoihin.';
+
+    const pctText = (km) => (total > 0 ? (km / total * 100).toLocaleString('fi-FI', { maximumFractionDigits: 1 }) + ' %' : '–');
+    function addRow(g, cls, sub) {
+      const div = document.createElement('div');
+      div.className = 'srow' + (cls ? ' ' + cls : '');
+      div.innerHTML = '<div class="top"><div class="name"></div><div class="val"><b></b><span></span></div></div>' +
+        '<div class="sub"></div><div class="bar"><div></div></div>';
+      div.querySelector('.name').textContent = g.name;
+      div.querySelector('.val b').textContent = fmt(g.km) + ' km';
+      div.querySelector('.val span').textContent = pctText(g.km);
+      div.querySelector('.sub').textContent = sub;
+      div.querySelector('.bar > div').style.width = total > 0 ? Math.min(100, g.km / total * 100) + '%' : '0';
+      box.appendChild(div);
+    }
+    const nAjoa = (n) => n + (n === 1 ? ' ajo' : ' ajoa');
+    rows.forEach((g) => addRow(g, '', nAjoa(g.n)));
+    addRow(other, 'other', nAjoa(other.n) + ' · ei selitettä tai selite ei ole vakioselite');
+    const gap = Math.max(0, total - recorded);
+    if (gap > 0) addRow({ name: 'Kirjaamattomat', km: gap }, 'gap', 'Mittarilla ajettu, mutta ajoa ei ole tallennettu');
+  }
+
+  // ---------- Välilehdet ----------
+  function showTab(stats) {
+    $('tabMain').setAttribute('aria-selected', String(!stats));
+    $('tabStats').setAttribute('aria-selected', String(stats));
+    $('viewMain').hidden = stats;
+    $('viewStats').hidden = !stats;
+    window.scrollTo(0, 0);
+  }
+  $('tabMain').addEventListener('click', () => showTab(false));
+  $('tabStats').addEventListener('click', () => { renderStats(); showTab(true); });
 
   function renderList() {
     const ul = $('tripList');
