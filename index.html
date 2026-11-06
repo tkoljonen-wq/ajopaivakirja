@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ajopäiväkirja</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f1b2d">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<script>
+  // Asennuskehote talteen heti, ennen kuin sovellus on latautunut
+  window.__installPrompt = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    window.__installPrompt = e;
+    window.dispatchEvent(new Event('installprompt-ready'));
+  });
+</script>
+<style>
+  :root {
+    --bg: #0f1b2d;
+    --card: #182a42;
+    --card2: #20364f;
+    --line: #2c4664;
+    --text: #e8eef6;
+    --muted: #93a7bf;
+    --accent: #3b82f6;
+    --pia: #f472b6;
+    --timppa: #34d399;
+    --danger: #ef4444;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 17px; line-height: 1.4;
+    padding: env(safe-area-inset-top) 0 calc(24px + env(safe-area-inset-bottom));
+  }
+  main { max-width: 560px; margin: 0 auto; padding: 0 16px; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    max-width: 560px; margin: 0 auto; padding: 14px 16px 6px;
+  }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 17px; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
+  .card { background: var(--card); border-radius: var(--radius); padding: 16px; margin: 12px 0; }
+  label.lbl { display: block; font-size: 14px; color: var(--muted); margin: 10px 0 6px; }
+  .row { display: flex; gap: 8px; align-items: stretch; }
+  input[type=text], select, textarea {
+    width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-height: 48px;
+  }
+  input.km { font-size: 24px; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+  input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  button {
+    font: inherit; border: 0; border-radius: 10px; min-height: 48px; padding: 0 16px;
+    background: var(--card2); color: var(--text); cursor: pointer;
+  }
+  button:active { filter: brightness(1.2); }
+  button.primary { background: var(--accent); color: #fff; font-weight: 600; width: 100%; margin-top: 14px; font-size: 18px; min-height: 54px; }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  button.ghost { background: transparent; color: var(--muted); }
+  button.small { min-height: 36px; padding: 0 12px; font-size: 15px; }
+  .paste { white-space: nowrap; }
+  .seg { display: flex; gap: 8px; }
+  .seg button { flex: 1; border: 2px solid transparent; }
+  .seg button[aria-pressed=true][data-v=Pia] { border-color: var(--pia); background: rgba(244,114,182,.18); }
+  .seg button[aria-pressed=true][data-v=Timppa] { border-color: var(--timppa); background: rgba(52,211,153,.18); }
+  .seg button[aria-pressed=true][data-v=""] { border-color: var(--muted); }
+  .check { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 15px; color: var(--muted); min-height: 36px; }
+  .check input { width: 22px; height: 22px; accent-color: var(--accent); }
+  .hint { font-size: 14px; color: var(--muted); margin-top: 6px; min-height: 1.2em; }
+  .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { background: var(--card2); border-radius: 12px; padding: 12px; }
+  .stat .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 13px; color: var(--muted); }
+  .stat.pia .v { color: var(--pia); }
+  .bar { height: 10px; border-radius: 6px; background: var(--card2); overflow: hidden; margin-top: 12px; }
+  .bar > div { height: 100%; background: var(--pia); width: 0; transition: width .3s; }
+  .running { display: flex; justify-content: space-between; align-items: baseline; background: var(--card2); border-radius: 12px; padding: 12px; }
+  .list { list-style: none; margin: 0; padding: 0; }
+  .list li {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 10px;
+    padding: 12px 4px; border-top: 1px solid var(--line); cursor: pointer;
+  }
+  .list li:first-child { border-top: 0; }
+  .list .d { font-size: 13px; color: var(--muted); }
+  .list .km { font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+  .list .r { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .list .n { font-size: 14px; grid-column: 1 / -1; color: var(--text); opacity: .85; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 99px; margin-left: 6px; }
+  .tag.Pia { background: rgba(244,114,182,.2); color: var(--pia); }
+  .tag.Timppa { background: rgba(52,211,153,.2); color: var(--timppa); }
+  .tag.none { background: var(--card2); color: var(--muted); }
+  .tag.run { background: rgba(59,130,246,.25); color: #93c5fd; }
+  .listhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .listhead h2 { margin: 0; }
+  .empty { color: var(--muted); font-size: 15px; padding: 8px 0; }
+  .more { width: 100%; margin-top: 8px; }
+  details summary { cursor: pointer; color: var(--muted); font-weight: 600; min-height: 32px; }
+  .presets { list-style: none; padding: 0; margin: 8px 0 0; }
+  .presets li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  dialog {
+    width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
+    border: 0; border-radius: var(--radius); padding: 16px; background: var(--card); color: var(--text);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  .dlgbtns { display: flex; gap: 8px; margin-top: 16px; }
+  .dlgbtns button { flex: 1; }
+  #toast {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%) translateY(120px);
+    background: #000c; color: #fff; padding: 12px 18px; border-radius: 12px; font-size: 15px;
+    transition: transform .25s; z-index: 10; max-width: calc(100vw - 32px); text-align: center;
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🚗 Ajopäiväkirja</h1>
+  <button id="installBtn" class="small" hidden>Asenna</button>
+</header>
+
+<main>
+  <!-- Yhteenveto -->
+  <section class="card">
+    <h2>Pian ajot</h2>
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <div class="big" id="sPiaKm">0 km</div>
+      <div class="big" id="sPiaPct" style="color:var(--pia)">–</div>
+    </div>
+    <div class="bar"><div id="sBar"></div></div>
+    <div class="stats" style="margin-top:12px">
+      <div class="stat"><div class="v" id="sTotal">–</div><div class="k">Ajettu yhteensä (mittarista)</div></div>
+      <div class="stat"><div class="v" id="sOther">–</div><div class="k">Muut kuin Pia</div></div>
+    </div>
+    <div class="hint" id="sRange"></div>
+  </section>
+
+  <!-- Ajo alkaa -->
+  <section class="card" id="startCard">
+    <h2>Ajo alkaa</h2>
+    <div class="row">
+      <input type="text" class="km" id="startKm" inputmode="numeric" autocomplete="off" placeholder="km-lukema">
+      <button class="paste" data-target="startKm">📋 Liitä</button>
+    </div>
+    <div class="hint" id="startHint"></div>
+    <button class="primary" id="startBtn">Aloita ajo</button>
+  </section>
+
+  <!-- Ajo päättyy -->
+  <section class="card" id="endCard" hidden>
+    <h2>Ajo käynnissä</h2>
+    <div class="running"><span>Alkulukema</span><strong id="runStart"></strong></div>
+    <label class="lbl" for="endKm">Ajo päättyy</label>
+    <div class="row">
+      <input type="text" class="km" id="endKm" inputmode="numeric" autocomplete="off" placeholder="km-lukema">
+      <button class="paste" data-target="endKm">📋 Liitä</button>
+    </div>
+    <div class="hint" id="endHint"></div>
+    <button class="primary" id="endBtn">Päätä ajo</button>
+    <button class="ghost small" id="cancelRunBtn" style="margin-top:8px">Peru käynnissä oleva ajo</button>
+  </section>
+
+  <!-- Päättyneen ajon merkintä -->
+  <section class="card" id="tagCard" hidden>
+    <h2>Ajo päättyi: <span id="tagKm"></span></h2>
+    <label class="lbl">Kenen ajo?</label>
+    <div class="seg" id="tagDriver">
+      <button data-v="Pia" aria-pressed="false">Pia</button>
+      <button data-v="Timppa" aria-pressed="false">Timppa</button>
+    </div>
+    <div id="tagNote"></div>
+    <div class="dlgbtns">
+      <button id="tagSkip" class="ghost">Ohita</button>
+      <button id="tagSave" class="primary" style="margin-top:0">Tallenna</button>
+    </div>
+  </section>
+
+  <!-- Lista -->
+  <section class="card">
+    <div class="listhead">
+      <h2>Ajot</h2>
+      <button class="small" id="addManualBtn">+ Lisää käsin</button>
+    </div>
+    <ul class="list" id="tripList"></ul>
+    <button class="more small" id="moreBtn" hidden>Näytä lisää</button>
+  </section>
+
+  <!-- Asetukset -->
+  <section class="card">
+    <details>
+      <summary>Vakioselitteet ja varmuuskopio</summary>
+      <label class="lbl">Vakioselitteet</label>
+      <ul class="presets" id="presetList"></ul>
+      <label class="lbl">Varmuuskopio</label>
+      <div class="hint" style="margin-top:0">Tiedot ovat vain tässä puhelimessa (selaimen paikallinen tallennus). Ota välillä varmuuskopio.</div>
+      <div class="btnrow">
+        <button class="small" id="exportBtn">Tallenna varmuuskopio</button>
+        <button class="small" id="importBtn">Palauta varmuuskopio</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+      </div>
+    </details>
+  </section>
+</main>
+
+<!-- Muokkausdialogi -->
+<dialog id="editDlg">
+  <h2 id="editTitle" tabindex="-1" autofocus style="outline:none">Muokkaa ajoa</h2>
+  <label class="lbl" for="eStart">Alkulukema (km)</label>
+  <input type="text" class="km" id="eStart" inputmode="numeric" autocomplete="off">
+  <label class="lbl" for="eEnd">Loppulukema (km)</label>
+  <input type="text" class="km" id="eEnd" inputmode="numeric" autocomplete="off" placeholder="tyhjä = ajo käynnissä">
+  <div class="hint" id="eHint"></div>
+  <label class="lbl">Kenen ajo?</label>
+  <div class="seg" id="eDriver">
+    <button data-v="Pia" aria-pressed="false">Pia</button>
+    <button data-v="Timppa" aria-pressed="false">Timppa</button>
+    <button data-v="" aria-pressed="false">Ei merkitty</button>
+  </div>
+  <div id="eNote"></div>
+  <div class="dlgbtns">
+    <button id="eDelete" class="danger">Poista</button>
+    <button id="eCancel">Peruuta</button>
+    <button id="eSave" class="primary" style="margin-top:0">Tallenna</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- Tallennus (localStorage, sovelluskohtainen avain) ----------
+  const STORE_KEY = 'ajopaivakirja:data';
+  let db = load();
+
+  function load() {
+    try {
+      const d = JSON.parse(localStorage.getItem(STORE_KEY));
+      if (d && Array.isArray(d.trips)) return { trips: d.trips, presets: Array.isArray(d.presets) ? d.presets : [] };
+    } catch (e) {}
+    return { trips: [], presets: [] };
+  }
+  function save() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
+    catch (e) { toast('Tallennus epäonnistui!'); }
+  }
+
+  // ---------- Apurit ----------
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n) => n.toLocaleString('fi-FI');
+  const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
+  const toNum = (s) => { const d = onlyDigits(s); return d ? parseInt(d, 10) : null; };
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+  function fmtDate(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.getDate() + '.' + (d.getMonth() + 1) + '.' + d.getFullYear() + ' klo ' +
+      d.getHours() + '.' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  let toastTimer;
+  function toast(msg) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  }
+
+  // Km-kentät: poimitaan vain numerot (esim. "Kokonaismatka: 185927 km" -> 185927)
+  function bindKmInput(el) {
+    el.addEventListener('input', () => {
+      const d = onlyDigits(el.value);
+      if (el.value !== d) el.value = d;
+    });
+  }
+  ['startKm', 'endKm', 'eStart', 'eEnd'].forEach((id) => bindKmInput($(id)));
+
+  document.querySelectorAll('button.paste').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const el = $(b.dataset.target);
+      try {
+        const txt = await navigator.clipboard.readText();
+        const d = onlyDigits(txt);
+        if (!d) { toast('Leikepöydällä ei ole numeroita'); return; }
+        el.value = d;
+        el.dispatchEvent(new Event('input'));
+      } catch (e) {
+        el.focus();
+        toast('Liitä painamalla kenttää pitkään');
+      }
+    });
+  });
+
+  function segValue(seg) {
+    const b = seg.querySelector('button[aria-pressed=true]');
+    return b ? b.dataset.v : null;
+  }
+  function setSeg(seg, v) {
+    seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === v)));
+  }
+  function bindSeg(seg, toggle) {
+    seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+      const pressed = b.getAttribute('aria-pressed') === 'true';
+      setSeg(seg, toggle && pressed ? null : b.dataset.v);
+    }));
+  }
+  bindSeg($('tagDriver'), true);
+  bindSeg($('eDriver'), false);
+
+  // ---------- Selitekenttä (vapaa teksti + vakioselitteet) ----------
+  function makeNoteField(container) {
+    container.innerHTML =
+      '<label class="lbl">Selite</label>' +
+      '<select class="preset"></select>' +
+      '<input type="text" class="note" placeholder="Vapaa selite" style="margin-top:8px" autocomplete="off">' +
+      '<label class="check"><input type="checkbox" class="savePreset"> Tallenna vakiovastaukseksi</label>';
+    const sel = container.querySelector('select');
+    const input = container.querySelector('input.note');
+    const chk = container.querySelector('input.savePreset');
+    sel.addEventListener('change', () => {
+      if (sel.value) { input.value = sel.value; chk.checked = false; }
+      sel.value = '';
+    });
+    const api = {
+      refresh() {
+        sel.innerHTML = '';
+        const o = new Option(db.presets.length ? 'Valitse vakioselite…' : 'Ei vakioselitteitä vielä', '');
+        sel.add(o);
+        db.presets.forEach((p) => sel.add(new Option(p, p)));
+        sel.disabled = !db.presets.length;
+      },
+      get value() { return input.value.trim(); },
+      set value(v) { input.value = v || ''; chk.checked = false; },
+      commitPreset() {
+        const v = input.value.trim();
+        if (chk.checked && v && !db.presets.includes(v)) {
+          db.presets.push(v);
+          db.presets.sort((a, b) => a.localeCompare(b, 'fi'));
+        }
+        chk.checked = false;
+      }
+    };
+    api.refresh();
+    return api;
+  }
+  const tagNote = makeNoteField($('tagNote'));
+  const editNote = makeNoteField($('eNote'));
+
+  // ---------- Laskenta ----------
+  function running() { return db.trips.find((t) => t.end == null) || null; }
+
+  function stats() {
+    const readings = [];
+    let pia = 0;
+    db.trips.forEach((t) => {
+      if (t.start != null) readings.push(t.start);
+      if (t.end != null) {
+        readings.push(t.end);
+        if (t.driver === 'Pia') pia += t.end - t.start;
+      }
+    });
+    // Kokonaisajo = suurin lukema - pienin lukema (ei syötettyjen ajojen summa)
+    const total = readings.length >= 2 ? Math.max(...readings) - Math.min(...readings) : 0;
+    return { pia, total, min: readings.length ? Math.min(...readings) : null, max: readings.length ? Math.max(...readings) : null };
+  }
+
+  function lastReading() {
+    let m = null;
+    db.trips.forEach((t) => {
+      [t.start, t.end].forEach((v) => { if (v != null && (m == null || v > m)) m = v; });
+    });
+    return m;
+  }
+
+  // ---------- Näkymä ----------
+  let listLimit = 30;
+  let justEndedId = null;
+
+  function render() {
+    const s = stats();
+    $('sPiaKm').textContent = fmt(s.pia) + ' km';
+    const pct = s.total > 0 ? (s.pia / s.total) * 100 : null;
+    $('sPiaPct').textContent = pct == null ? '–' : pct.toLocaleString('fi-FI', { maximumFractionDigits: 1 }) + ' %';
+    $('sBar').style.width = pct == null ? '0' : Math.min(100, pct) + '%';
+    $('sTotal').textContent = s.total > 0 ? fmt(s.total) + ' km' : '–';
+    $('sOther').textContent = s.total > 0 ? fmt(Math.max(0, s.total - s.pia)) + ' km' : '–';
+    $('sRange').textContent = s.min != null && s.max > s.min ? 'Mittari ' + fmt(s.min) + ' → ' + fmt(s.max) + ' km' : '';
+
+    const r = running();
+    $('startCard').hidden = !!r || !!justEndedId;
+    $('endCard').hidden = !r;
+    $('tagCard').hidden = !justEndedId;
+    if (r) $('runStart').textContent = fmt(r.start) + ' km';
+    const lr = lastReading();
+    $('startKm').placeholder = lr != null ? 'edellinen ' + lr : 'km-lukema';
+
+    renderList();
+    renderPresets();
+  }
+
+  function renderList() {
+    const ul = $('tripList');
+    ul.innerHTML = '';
+    const sorted = db.trips.slice().sort((a, b) => (b.start - a.start) || ((b.startedAt || 0) - (a.startedAt || 0)));
+    if (!sorted.length) {
+      ul.innerHTML = '<li class="empty" style="cursor:default">Ei vielä ajoja. Aloita syöttämällä mittarilukema.</li>';
+    }
+    sorted.slice(0, listLimit).forEach((t) => {
+      const li = document.createElement('li');
+      const dist = t.end != null ? fmt(t.end - t.start) + ' km' : '';
+      let tag;
+      if (t.end == null) tag = '<span class="tag run">käynnissä</span>';
+      else if (t.driver) tag = '<span class="tag ' + t.driver + '">' + t.driver + '</span>';
+      else tag = '<span class="tag none">ei merkitty</span>';
+      li.innerHTML =
+        '<div class="d">' + fmtDate(t.endedAt || t.startedAt) + tag + '</div>' +
+        '<div class="km">' + dist + '</div>' +
+        '<div class="r">' + fmt(t.start) + ' → ' + (t.end != null ? fmt(t.end) : '…') + '</div><div></div>' +
+        (t.note ? '<div class="n"></div>' : '');
+      if (t.note) li.querySelector('.n').textContent = t.note;
+      li.addEventListener('click', () => openEdit(t.id));
+      ul.appendChild(li);
+    });
+    $('moreBtn').hidden = sorted.length <= listLimit;
+  }
+
+  function renderPresets() {
+    const ul = $('presetList');
+    ul.innerHTML = '';
+    if (!db.presets.length) {
+      ul.innerHTML = '<li class="empty">Ei vakioselitteitä. Lisää selitettä kirjoittaessa valinnalla "Tallenna vakiovastaukseksi".</li>';
+    }
+    db.presets.forEach((p) => {
+      const li = document.createElement('li');
+      const span = document.createElement('span');
+      span.textContent = p;
+      const b = document.createElement('button');
+      b.className = 'small ghost';
+      b.textContent = '✕ Poista';
+      b.addEventListener('click', () => {
+        db.presets = db.presets.filter((x) => x !== p);
+        save(); tagNote.refresh(); editNote.refresh(); render();
+      });
+      li.append(span, b);
+      ul.appendChild(li);
+    });
+  }
+
+  $('moreBtn').addEventListener('click', () => { listLimit += 30; renderList(); });
+
+  // ---------- Ajo alkaa ----------
+  function updateStartHint() {
+    const v = toNum($('startKm').value);
+    const lr = lastReading();
+    let h = '';
+    if (v != null && lr != null) {
+      if (v < lr) h = '⚠️ Pienempi kuin edellinen lukema (' + fmt(lr) + ')';
+      else if (v > lr) h = 'Edellisestä lukemasta ' + fmt(v - lr) + ' km (kirjaamattomat ajot)';
+    }
+    $('startHint').textContent = h;
+  }
+  $('startKm').addEventListener('input', updateStartHint);
+
+  $('startBtn').addEventListener('click', () => {
+    const v = toNum($('startKm').value);
+    if (v == null) { toast('Syötä alkulukema'); return; }
+    const lr = lastReading();
+    if (lr != null && v < lr && !confirm('Lukema ' + fmt(v) + ' on pienempi kuin edellinen lukema ' + fmt(lr) + '. Tallennetaanko silti?')) return;
+    db.trips.push({ id: uid(), start: v, end: null, driver: '', note: '', startedAt: Date.now(), endedAt: null });
+    save();
+    $('startKm').value = '';
+    $('startHint').textContent = '';
+    render();
+    toast('Ajo aloitettu');
+  });
+
+  // ---------- Ajo päättyy ----------
+  $('endKm').addEventListener('input', () => {
+    const r = running();
+    const v = toNum($('endKm').value);
+    $('endHint').textContent = r && v != null ? (v >= r.start ? 'Ajomatka ' + fmt(v - r.start) + ' km' : '⚠️ Pienempi kuin alkulukema') : '';
+  });
+
+  $('endBtn').addEventListener('click', () => {
+    const r = running();
+    if (!r) return;
+    const v = toNum($('endKm').value);
+    if (v == null) { toast('Syötä loppulukema'); return; }
+    if (v < r.start) { toast('Loppulukema ei voi olla pienempi kuin alkulukema'); return; }
+    r.end = v;
+    r.endedAt = Date.now();
+    save();
+    $('endKm').value = '';
+    $('endHint').textContent = '';
+    justEndedId = r.id;
+    $('tagKm').textContent = fmt(r.end - r.start) + ' km';
+    setSeg($('tagDriver'), null);
+    tagNote.refresh();
+    tagNote.value = '';
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  $('cancelRunBtn').addEventListener('click', () => {
+    const r = running();
+    if (!r || !confirm('Perutaanko käynnissä oleva ajo (alkulukema ' + fmt(r.start) + ')?')) return;
+    db.trips = db.trips.filter((t) => t !== r);
+    save(); render();
+  });
+
+  // ---------- Päättyneen ajon merkintä ----------
+  $('tagSave').addEventListener('click', () => {
+    const t = db.trips.find((x) => x.id === justEndedId);
+    if (t) {
+      t.driver = segValue($('tagDriver')) || '';
+      t.note = tagNote.value;
+      tagNote.commitPreset();
+      save();
+    }
+    justEndedId = null;
+    tagNote.refresh(); editNote.refresh();
+    render();
+    toast('Ajo tallennettu');
+  });
+  $('tagSkip').addEventListener('click', () => {
+    justEndedId = null;
+    render();
+    toast('Ajo tallennettu ilman merkintää');
+  });
+
+  // ---------- Muokkaus ----------
+  const dlg = $('editDlg');
+  let editId = null;
+
+  function openEdit(id) {
+    editId = id;
+    const t = id ? db.trips.find((x) => x.id === id) : null;
+    $('editTitle').textContent = t ? 'Muokkaa ajoa' : 'Lisää ajo käsin';
+    $('eStart').value = t ? t.start : '';
+    $('eEnd').value = t && t.end != null ? t.end : '';
+    setSeg($('eDriver'), t ? (t.driver || '') : '');
+    editNote.refresh();
+    editNote.value = t ? t.note : '';
+    $('eDelete').hidden = !t;
+    $('eHint').textContent = t ? 'Tallennettu ' + fmtDate(t.startedAt) : '';
+    dlg.showModal();
+  }
+
+  $('addManualBtn').addEventListener('click', () => openEdit(null));
+  $('eCancel').addEventListener('click', () => dlg.close());
+
+  $('eSave').addEventListener('click', () => {
+    const start = toNum($('eStart').value);
+    const end = toNum($('eEnd').value);
+    if (start == null) { toast('Alkulukema puuttuu'); return; }
+    if (end != null && end < start) { toast('Loppulukema on pienempi kuin alkulukema'); return; }
+    const other = running();
+    if (end == null && other && other.id !== editId) { toast('Toinen ajo on jo käynnissä – anna loppulukema'); return; }
+    let t = editId ? db.trips.find((x) => x.id === editId) : null;
+    if (!t) {
+      t = { id: uid(), startedAt: Date.now(), endedAt: null };
+      db.trips.push(t);
+    }
+    t.start = start;
+    if (end != null && t.end == null) t.endedAt = t.endedAt || Date.now();
+    t.end = end;
+    if (end == null) t.endedAt = null;
+    t.driver = segValue($('eDriver')) || '';
+    t.note = editNote.value;
+    editNote.commitPreset();
+    if (justEndedId === t.id) justEndedId = null;
+    save();
+    tagNote.refresh();
+    dlg.close();
+    render();
+    toast('Tallennettu');
+  });
+
+  $('eDelete').addEventListener('click', () => {
+    if (!confirm('Poistetaanko ajo pysyvästi?')) return;
+    db.trips = db.trips.filter((x) => x.id !== editId);
+    if (justEndedId === editId) justEndedId = null;
+    save(); dlg.close(); render();
+    toast('Ajo poistettu');
+  });
+
+  // ---------- Varmuuskopio ----------
+  $('exportBtn').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    const d = new Date();
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ajopaivakirja-' + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+  $('importBtn').addEventListener('click', () => $('importFile').click());
+  $('importFile').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const d = JSON.parse(await f.text());
+      if (!d || !Array.isArray(d.trips)) throw new Error();
+      if (!confirm('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.trips.length + ' ajoa)?')) return;
+      db = { trips: d.trips, presets: Array.isArray(d.presets) ? d.presets : [] };
+      justEndedId = null;
+      save(); tagNote.refresh(); editNote.refresh(); render();
+      toast('Varmuuskopio palautettu');
+    } catch (err) {
+      toast('Tiedosto ei ole kelvollinen varmuuskopio');
+    }
+  });
+
+  // ---------- Asennus (PWA) ----------
+  const installBtn = $('installBtn');
+  function updateInstall() { installBtn.hidden = !window.__installPrompt; }
+  window.addEventListener('installprompt-ready', updateInstall);
+  window.addEventListener('appinstalled', () => { window.__installPrompt = null; updateInstall(); });
+  installBtn.addEventListener('click', async () => {
+    const p = window.__installPrompt;
+    if (!p) return;
+    p.prompt();
+    try { await p.userChoice; } catch (e) {}
+    window.__installPrompt = null;
+    updateInstall();
+  });
+  updateInstall();
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
