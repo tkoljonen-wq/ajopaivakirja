@@ -241,10 +241,39 @@
   const STORE_KEY = 'ajopaivakirja:data';
   let db = load();
 
+  // Tarkistaa ja siistii tiedot (localStorage / varmuuskopio), ettei niiden mukana voi tulla HTML:ää tai roskaa
+  function normalize(d) {
+    if (!d || !Array.isArray(d.trips)) return null;
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null);
+    const trips = d.trips.map((t) => {
+      if (!t || typeof t !== 'object') return null;
+      const start = num(t.start);
+      if (start == null) return null;
+      let end = num(t.end);
+      if (end != null && end < start) end = null;
+      return {
+        id: typeof t.id === 'string' && /^[a-z0-9]{1,40}$/i.test(t.id) ? t.id : uid(),
+        start: start,
+        end: end,
+        driver: t.driver === 'Pia' || t.driver === 'Timppa' ? t.driver : '',
+        note: typeof t.note === 'string' ? t.note.slice(0, 500) : '',
+        startedAt: num(t.startedAt),
+        endedAt: end != null ? num(t.endedAt) : null
+      };
+    }).filter(Boolean);
+    // Vain yksi käynnissä oleva ajo sallitaan
+    let seenRunning = false;
+    const clean = trips.filter((t) => { if (t.end != null) return true; if (seenRunning) return false; seenRunning = true; return true; });
+    const presets = Array.isArray(d.presets)
+      ? [...new Set(d.presets.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().slice(0, 200)))]
+      : [];
+    return { trips: clean, presets: presets };
+  }
+
   function load() {
     try {
-      const d = JSON.parse(localStorage.getItem(STORE_KEY));
-      if (d && Array.isArray(d.trips)) return { trips: d.trips, presets: Array.isArray(d.presets) ? d.presets : [] };
+      const d = normalize(JSON.parse(localStorage.getItem(STORE_KEY)));
+      if (d) return d;
     } catch (e) {}
     return { trips: [], presets: [] };
   }
@@ -254,11 +283,11 @@
   }
 
   // ---------- Apurit ----------
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => n.toLocaleString('fi-FI');
   const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
   const toNum = (s) => { const d = onlyDigits(s); return d ? parseInt(d, 10) : null; };
-  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
   function fmtDate(ts) {
     if (!ts) return '';
@@ -610,10 +639,10 @@
     e.target.value = '';
     if (!f) return;
     try {
-      const d = JSON.parse(await f.text());
-      if (!d || !Array.isArray(d.trips)) throw new Error();
+      const d = normalize(JSON.parse(await f.text()));
+      if (!d) throw new Error();
       if (!confirm('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.trips.length + ' ajoa)?')) return;
-      db = { trips: d.trips, presets: Array.isArray(d.presets) ? d.presets : [] };
+      db = d;
       justEndedId = null;
       save(); tagNote.refresh(); editNote.refresh(); render();
       toast('Varmuuskopio palautettu');
