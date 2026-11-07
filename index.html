@@ -64,6 +64,29 @@
   button.ghost { background: transparent; color: var(--muted); }
   button.small { min-height: 36px; padding: 0 12px; font-size: 15px; }
   .paste { white-space: nowrap; }
+  .prevbtn { width: 100%; margin-top: 8px; }
+  .gaplist li .km { color: var(--muted); }
+  .badge { display: inline-block; min-width: 22px; padding: 0 7px; border-radius: 99px; background: var(--danger); color: #fff; font-size: 13px; font-weight: 700; margin-left: 6px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tile { background: var(--card2); border-radius: 12px; padding: 12px; }
+  .tile .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .k { font-size: 13px; color: var(--muted); }
+  .tile.all { grid-column: 1 / -1; }
+  .tile.Pia .v { color: var(--pia); }
+  .tile.Timppa .v { color: var(--timppa); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .trow { display: grid; grid-template-columns: 3.2em 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
+  .trow.month { grid-template-columns: 4.6em 1fr auto; }
+  .trow .lab { font-size: 15px; color: var(--muted); }
+  .trow .val { font-variant-numeric: tabular-nums; text-align: right; font-size: 15px; white-space: nowrap; }
+  .trow .val small { display: block; color: var(--muted); font-size: 12px; }
+  .stack { display: flex; height: 16px; border-radius: 5px; overflow: hidden; background: var(--bg); }
+  .stack > div { height: 100%; }
+  .c-Pia { background: var(--pia); }
+  .c-Timppa { background: var(--timppa); }
+  .c-none { background: var(--accent); }
+  .c-gap { background: #4b6380; }
   .seg { display: flex; gap: 8px; }
   .seg button { flex: 1; border: 2px solid transparent; }
   .seg button[aria-pressed=true][data-v=Pia] { border-color: var(--pia); background: rgba(244,114,182,.18); }
@@ -151,6 +174,26 @@
   <!-- Tilastot -->
   <div id="viewStats" hidden>
     <section class="card">
+      <h2>Keskimäärin päivässä</h2>
+      <div class="tiles" id="avgTiles"></div>
+      <div class="hint" id="avgBase"></div>
+    </section>
+
+    <section class="card">
+      <h2>Viikonpäivät</h2>
+      <div class="hint" style="margin-top:-6px;margin-bottom:8px">Keskimääräinen ajo kyseisenä viikonpäivänä.</div>
+      <div class="legend" id="legend1"></div>
+      <div id="weekdayList"></div>
+    </section>
+
+    <section class="card">
+      <h2>Kuukaudet</h2>
+      <div class="hint" style="margin-top:-6px;margin-bottom:8px">Ajettu yhteensä kuukaudessa ja keskimäärin päivässä.</div>
+      <div class="legend" id="legend2"></div>
+      <div id="monthList"></div>
+    </section>
+
+    <section class="card">
       <h2>Ajot selitteittäin</h2>
       <div class="hint" style="margin-top:-6px;margin-bottom:6px" id="statsBase"></div>
       <div id="statsList"></div>
@@ -180,6 +223,7 @@
       <input type="text" class="km" id="startKm" inputmode="numeric" autocomplete="off" placeholder="km-lukema">
       <button class="paste" data-target="startKm">📋 Liitä</button>
     </div>
+    <button class="small prevbtn" data-target="startKm" hidden>↺ Käytä edellistä lukemaa</button>
     <div class="hint" id="startHint"></div>
     <button class="primary" id="startBtn">Aloita ajo</button>
   </section>
@@ -211,6 +255,13 @@
       <button id="tagSkip" class="ghost">Ohita</button>
       <button id="tagSave" class="primary" style="margin-top:0">Tallenna</button>
     </div>
+  </section>
+
+  <!-- Kirjaamattomat ajot -->
+  <section class="card" id="gapCard" hidden>
+    <h2>Kirjaamattomat ajot<span class="badge" id="gapCount"></span></h2>
+    <div class="hint" style="margin-top:-6px">Mittarilla ajettu, mutta ajoa ei ole tallennettu. Napauta ja anna kuski ja selite.</div>
+    <ul class="list gaplist" id="gapList"></ul>
   </section>
 
   <!-- Lista -->
@@ -246,6 +297,7 @@
   <h2 id="editTitle" tabindex="-1" autofocus style="outline:none">Muokkaa ajoa</h2>
   <label class="lbl" for="eStart">Alkulukema (km)</label>
   <input type="text" class="km" id="eStart" inputmode="numeric" autocomplete="off">
+  <button class="small prevbtn" data-target="eStart" hidden>↺ Käytä edellistä lukemaa</button>
   <label class="lbl" for="eEnd">Loppulukema (km)</label>
   <input type="text" class="km" id="eEnd" inputmode="numeric" autocomplete="off" placeholder="tyhjä = ajo käynnissä">
   <div class="hint" id="eHint"></div>
@@ -290,7 +342,8 @@
         driver: t.driver === 'Pia' || t.driver === 'Timppa' ? t.driver : '',
         note: typeof t.note === 'string' ? t.note.slice(0, 500) : '',
         startedAt: num(t.startedAt),
-        endedAt: end != null ? num(t.endedAt) : null
+        endedAt: end != null ? num(t.endedAt) : null,
+        est: t.est === true // ajankohta arvioitu kirjaamattoman välin perusteella
       };
     }).filter(Boolean);
     // Vain yksi käynnissä oleva ajo sallitaan
@@ -361,6 +414,25 @@
       }
     });
   });
+
+  // "Käytä edellistä lukemaa" -napit
+  document.querySelectorAll('button.prevbtn').forEach((b) => {
+    b.addEventListener('click', () => {
+      const lr = lastReading();
+      if (lr == null) return;
+      const el = $(b.dataset.target);
+      el.value = String(lr);
+      el.dispatchEvent(new Event('input'));
+    });
+  });
+  function updatePrevBtns() {
+    const lr = lastReading();
+    document.querySelectorAll('button.prevbtn').forEach((b) => {
+      if (b.dataset.target === 'eStart') return; // dialogi hoitaa itse
+      b.hidden = lr == null;
+      if (lr != null) b.textContent = '↺ Käytä edellistä lukemaa (' + fmt(lr) + ')';
+    });
+  }
 
   function segValue(seg) {
     const b = seg.querySelector('button[aria-pressed=true]');
@@ -443,6 +515,59 @@
     return m;
   }
 
+  // Kirjaamattomat välit: mittarilukemien aukot peräkkäisten ajojen välissä.
+  // Aikaikkuna = edellisen ajon päättymisestä seuraavan alkuun.
+  function gaps() {
+    const sorted = db.trips.slice().sort((a, b) => (a.start - b.start) || ((a.startedAt || 0) - (b.startedAt || 0)));
+    const out = [];
+    let cursor = null, prev = null;
+    sorted.forEach((t) => {
+      if (cursor != null && t.start > cursor) {
+        let from = prev ? ((prev.est ? prev.startedAt : prev.endedAt) || prev.startedAt) : null;
+        let to = t.startedAt || null;
+        if (from && to && from > to) from = null;
+        out.push({ start: cursor, end: t.start, from: from, to: to });
+      }
+      const reach = t.end != null ? t.end : t.start;
+      if (cursor == null || reach >= cursor) { cursor = reach; prev = t; }
+    });
+    return out;
+  }
+
+  function fmtDay(ts) {
+    if (!ts) return '?';
+    const d = new Date(ts);
+    return d.getDate() + '.' + (d.getMonth() + 1) + '.';
+  }
+  function gapWhen(g) {
+    if (g.from && g.to) {
+      const a = fmtDay(g.from), b = fmtDay(g.to);
+      return a === b ? a + new Date(g.to).getFullYear() : a + '–' + b + new Date(g.to).getFullYear();
+    }
+    if (g.to) return 'ennen ' + fmtDay(g.to) + new Date(g.to).getFullYear();
+    if (g.from) return 'jälkeen ' + fmtDay(g.from) + new Date(g.from).getFullYear();
+    return 'ajankohta tuntematon';
+  }
+
+  function renderGaps() {
+    const list = gaps().reverse();
+    $('gapCard').hidden = !list.length;
+    $('gapCount').textContent = list.length;
+    const ul = $('gapList');
+    ul.innerHTML = '';
+    list.forEach((g) => {
+      const li = document.createElement('li');
+      li.innerHTML =
+        '<div class="d"></div><div class="km"></div>' +
+        '<div class="r"></div><div class="r" style="text-align:right">Merkitse ›</div>';
+      li.querySelector('.d').textContent = gapWhen(g);
+      li.querySelector('.km').textContent = fmt(g.end - g.start) + ' km';
+      li.querySelector('.r').textContent = fmt(g.start) + ' → ' + fmt(g.end);
+      li.addEventListener('click', () => openEdit(null, g));
+      ul.appendChild(li);
+    });
+  }
+
   // ---------- Näkymä ----------
   let listLimit = 30;
   let justEndedId = null;
@@ -464,7 +589,9 @@
     if (r) $('runStart').textContent = fmt(r.start) + ' km';
     const lr = lastReading();
     $('startKm').placeholder = lr != null ? 'edellinen ' + lr : 'km-lukema';
+    updatePrevBtns();
 
+    renderGaps();
     renderList();
     renderPresets();
     renderStats();
@@ -511,6 +638,150 @@
     addRow(other, 'other', nAjoa(other.n) + ' · ei selitettä tai selite ei ole vakioselite');
     const gap = Math.max(0, total - recorded);
     if (gap > 0) addRow({ name: 'Kirjaamattomat', km: gap }, 'gap', 'Mittarilla ajettu, mutta ajoa ei ole tallennettu');
+
+    renderTrends();
+  }
+
+  // ---------- Päivä-, viikonpäivä- ja kuukausitilastot ----------
+  const CATS = [
+    { k: 'Pia', name: 'Pia' },
+    { k: 'Timppa', name: 'Timppa' },
+    { k: 'none', name: 'Ei merkitty' },
+    { k: 'gap', name: 'Kirjaamaton' }
+  ];
+  const WD = ['Ma', 'Ti', 'Ke', 'To', 'Pe', 'La', 'Su'];
+  const MONTHS = ['tammi', 'helmi', 'maalis', 'huhti', 'touko', 'kesä', 'heinä', 'elo', 'syys', 'loka', 'marras', 'joulu'];
+  const dayStart = (ts) => { const d = new Date(ts); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); };
+  const dayKey = (d) => d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+  const nextDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+  const emptyCats = () => ({ Pia: 0, Timppa: 0, none: 0, gap: 0 });
+
+  // Jakaa ajon kilometrit tasan ajon aikaikkunan kalenteripäiville
+  function dailyData() {
+    const days = new Map(); // dayKey -> { date, Pia, Timppa, none, gap }
+    let first = null, last = null;
+    function add(fromTs, toTs, km, cat) {
+      if (!(km > 0)) return;
+      const a = fromTs || toTs, b = toTs || fromTs;
+      if (!a) return;
+      let d = dayStart(Math.min(a, b));
+      const end = dayStart(Math.max(a, b));
+      const list = [];
+      while (d <= end) { list.push(d); d = nextDay(d); }
+      list.forEach((day) => {
+        const key = dayKey(day);
+        if (!days.has(key)) days.set(key, Object.assign({ date: day }, emptyCats()));
+        days.get(key)[cat] += km / list.length;
+      });
+      if (!first || list[0] < first) first = list[0];
+      if (!last || list[list.length - 1] > last) last = list[list.length - 1];
+    }
+    db.trips.forEach((t) => {
+      if (t.end == null) return;
+      add(t.startedAt, t.endedAt, t.end - t.start, t.driver || 'none');
+    });
+    gaps().forEach((g) => add(g.from, g.to, g.end - g.start, 'gap'));
+    return { days, first, last };
+  }
+
+  function legendHtml() {
+    return CATS.map((c) => '<span><i class="c-' + c.k + '"></i>' + c.name + '</span>').join('');
+  }
+  const fmt1 = (n) => n.toLocaleString('fi-FI', { maximumFractionDigits: n < 10 ? 1 : 0 });
+
+  function stackRow(container, label, cats, max, valMain, valSub, cls) {
+    const row = document.createElement('div');
+    row.className = 'trow' + (cls ? ' ' + cls : '');
+    const lab = document.createElement('div'); lab.className = 'lab'; lab.textContent = label;
+    const stack = document.createElement('div'); stack.className = 'stack';
+    CATS.forEach((c) => {
+      if (!(cats[c.k] > 0) || !(max > 0)) return;
+      const seg = document.createElement('div');
+      seg.className = 'c-' + c.k;
+      seg.style.width = (cats[c.k] / max * 100) + '%';
+      seg.title = c.name + ' ' + fmt1(cats[c.k]) + ' km';
+      stack.appendChild(seg);
+    });
+    const val = document.createElement('div'); val.className = 'val';
+    val.textContent = valMain;
+    if (valSub) { const s = document.createElement('small'); s.textContent = valSub; val.appendChild(s); }
+    row.append(lab, stack, val);
+    container.appendChild(row);
+  }
+
+  function renderTrends() {
+    const { days, first, last } = dailyData();
+    const tiles = $('avgTiles');
+    tiles.innerHTML = '';
+    $('legend1').innerHTML = legendHtml();
+    $('legend2').innerHTML = legendHtml();
+    const wdBox = $('weekdayList'), mBox = $('monthList');
+    wdBox.innerHTML = ''; mBox.innerHTML = '';
+    if (!first) {
+      $('avgBase').textContent = 'Ei vielä päättyneitä ajoja.';
+      wdBox.innerHTML = mBox.innerHTML = '<div class="empty">Ei tietoja.</div>';
+      return;
+    }
+
+    // Jakson päivät, viikonpäivien ja kuukausien summat
+    const totals = emptyCats();
+    const wd = WD.map(() => ({ n: 0, cats: emptyCats() }));
+    const months = new Map();
+    let nDays = 0;
+    for (let d = first; d <= last; d = nextDay(d)) {
+      nDays++;
+      const rec = days.get(dayKey(d)) || emptyCats();
+      const w = (d.getDay() + 6) % 7; // ma = 0
+      const mk = d.getFullYear() * 100 + d.getMonth();
+      if (!months.has(mk)) months.set(mk, { y: d.getFullYear(), m: d.getMonth(), n: 0, cats: emptyCats() });
+      const mo = months.get(mk);
+      wd[w].n++; mo.n++;
+      CATS.forEach((c) => {
+        totals[c.k] += rec[c.k] || 0;
+        wd[w].cats[c.k] += rec[c.k] || 0;
+        mo.cats[c.k] += rec[c.k] || 0;
+      });
+    }
+    const sum = (cats) => CATS.reduce((s, c) => s + cats[c.k], 0);
+
+    // Keskiarvot päivässä
+    function tile(cls, v, k) {
+      const div = document.createElement('div');
+      div.className = 'tile ' + cls;
+      div.innerHTML = '<div class="v"></div><div class="k"></div>';
+      div.querySelector('.v').textContent = v;
+      div.querySelector('.k').textContent = k;
+      tiles.appendChild(div);
+    }
+    const perDay = (km) => fmt1(km / nDays) + ' km';
+    tile('all', perDay(sum(totals)), 'Yhteensä / päivä');
+    tile('Pia', perDay(totals.Pia), 'Pia / päivä');
+    tile('Timppa', perDay(totals.Timppa), 'Timppa / päivä');
+    if (totals.none > 0 || totals.gap > 0) {
+      tile('', perDay(totals.none), 'Ei merkitty / päivä');
+      tile('', perDay(totals.gap), 'Kirjaamaton / päivä');
+    }
+    $('avgBase').textContent = 'Jakso ' + first.getDate() + '.' + (first.getMonth() + 1) + '.' + first.getFullYear() +
+      ' – ' + last.getDate() + '.' + (last.getMonth() + 1) + '.' + last.getFullYear() + ' (' + nDays + ' pv, ' +
+      fmt(Math.round(sum(totals))) + ' km). Monen päivän ajot ja kirjaamattomat välit on jaettu tasan aikavälin päiville.';
+
+    // Viikonpäivät: keskiarvo per kyseinen viikonpäivä
+    const wdAvg = wd.map((x) => {
+      const c = emptyCats();
+      CATS.forEach((k) => { c[k.k] = x.n ? x.cats[k.k] / x.n : 0; });
+      return c;
+    });
+    const wdMax = Math.max(...wdAvg.map(sum));
+    wdAvg.forEach((c, i) => stackRow(wdBox, WD[i], c, wdMax, fmt1(sum(c)) + ' km', wd[i].n + ' pv'));
+
+    // Kuukaudet: uusin ensin
+    const mList = [...months.values()].reverse();
+    const mMax = Math.max(...mList.map((m) => sum(m.cats)));
+    mList.forEach((m) => {
+      const tot = sum(m.cats);
+      const label = MONTHS[m.m] + (m.y !== new Date().getFullYear() ? ' ' + String(m.y).slice(2) : '');
+      stackRow(mBox, label, m.cats, mMax, fmt(Math.round(tot)) + ' km', fmt1(tot / m.n) + ' km/pv', 'month');
+    });
   }
 
   // ---------- Välilehdet ----------
@@ -539,7 +810,7 @@
       else if (t.driver) tag = '<span class="tag ' + t.driver + '">' + t.driver + '</span>';
       else tag = '<span class="tag none">ei merkitty</span>';
       li.innerHTML =
-        '<div class="d">' + fmtDate(t.endedAt || t.startedAt) + tag + '</div>' +
+        '<div class="d">' + (t.est ? gapWhen({ from: t.startedAt, to: t.endedAt }) + ' (arvio)' : fmtDate(t.endedAt || t.startedAt)) + tag + '</div>' +
         '<div class="km">' + dist + '</div>' +
         '<div class="r">' + fmt(t.start) + ' → ' + (t.end != null ? fmt(t.end) : '…') + '</div><div></div>' +
         (t.note ? '<div class="n"></div>' : '');
@@ -657,18 +928,25 @@
   // ---------- Muokkaus ----------
   const dlg = $('editDlg');
   let editId = null;
+  let editGap = null; // kirjaamaton väli, jota ollaan merkitsemässä
 
-  function openEdit(id) {
+  function openEdit(id, gap) {
     editId = id;
+    editGap = gap || null;
     const t = id ? db.trips.find((x) => x.id === id) : null;
-    $('editTitle').textContent = t ? 'Muokkaa ajoa' : 'Lisää ajo käsin';
-    $('eStart').value = t ? t.start : '';
-    $('eEnd').value = t && t.end != null ? t.end : '';
-    setSeg($('eDriver'), t ? (t.driver || '') : '');
+    $('editTitle').textContent = t ? 'Muokkaa ajoa' : (gap ? 'Merkitse kirjaamaton ajo' : 'Lisää ajo käsin');
+    $('eStart').value = t ? t.start : (gap ? gap.start : '');
+    $('eEnd').value = t && t.end != null ? t.end : (gap ? gap.end : '');
+    setSeg($('eDriver'), t ? (t.driver || '') : (gap ? null : ''));
     editNote.refresh();
     editNote.value = t ? t.note : '';
     $('eDelete').hidden = !t;
-    $('eHint').textContent = t ? 'Tallennettu ' + fmtDate(t.startedAt) : '';
+    $('eHint').textContent = t ? 'Tallennettu ' + fmtDate(t.startedAt)
+      : gap ? gapWhen(gap) + '. Jos väli sisältää useita ajoja, pienennä loppulukemaa – loppuosa jää kirjaamattomaksi.' : '';
+    const pb = dlg.querySelector('.prevbtn');
+    const lr = lastReading();
+    pb.hidden = !!t || !!gap || lr == null;
+    if (lr != null) pb.textContent = '↺ Käytä edellistä lukemaa (' + fmt(lr) + ')';
     dlg.showModal();
   }
 
@@ -685,6 +963,13 @@
     let t = editId ? db.trips.find((x) => x.id === editId) : null;
     if (!t) {
       t = { id: uid(), startedAt: Date.now(), endedAt: null };
+      if (editGap) {
+        // Ajankohta kirjaamattoman välin aikaikkunasta (tilastoja varten)
+        const now = Date.now();
+        t.startedAt = editGap.from || editGap.to || now;
+        t.endedAt = editGap.to || editGap.from || now;
+        t.est = true;
+      }
       db.trips.push(t);
     }
     t.start = start;
