@@ -64,6 +64,15 @@
   button.ghost { background: transparent; color: var(--muted); }
   button.small { min-height: 36px; padding: 0 12px; font-size: 15px; }
   .paste { white-space: nowrap; }
+  /* Hae palvelimelta: kahdelle riville, ettei rivi levene puhelimessa */
+  .srv { flex: 0 0 auto; width: 6.6em; padding: 0 8px; font-size: 14px; line-height: 1.15; white-space: normal; background: var(--accent); color: #fff; font-weight: 600; }
+  .srv[disabled] { opacity: .6; }
+  /* Kun palvelinhaku on käytössä, Liitä-nappi kutistuu pelkäksi kuvakkeeksi */
+  body.srv-on .paste { padding: 0 12px; }
+  body.srv-on .paste .ptxt { display: none; }
+  .srvinfo { color: var(--text); opacity: .85; }
+  .srvinfo.warn { color: #fbbf24; opacity: 1; }
+  input.key { font-family: ui-monospace, Consolas, monospace; font-size: 15px; }
   .prevbtn { width: 100%; margin-top: 8px; }
   .gaplist li .km { color: var(--muted); }
   .badge { display: inline-block; min-width: 22px; padding: 0 7px; border-radius: 99px; background: var(--danger); color: #fff; font-size: 13px; font-weight: 700; margin-left: 6px; }
@@ -221,8 +230,10 @@
     <h2>Ajo alkaa</h2>
     <div class="row">
       <input type="text" class="km" id="startKm" inputmode="numeric" autocomplete="off" placeholder="km-lukema">
-      <button class="paste" data-target="startKm">📋 Liitä</button>
+      <button class="srv" data-target="startKm" data-info="startSrv" hidden>☁ Hae palvelimelta</button>
+      <button class="paste" data-target="startKm" aria-label="Liitä">📋<span class="ptxt"> Liitä</span></button>
     </div>
+    <div class="hint srvinfo" id="startSrv" hidden></div>
     <button class="small prevbtn" data-target="startKm" hidden>↺ Käytä edellistä lukemaa</button>
     <div class="hint" id="startHint"></div>
     <button class="primary" id="startBtn">Aloita ajo</button>
@@ -235,8 +246,10 @@
     <label class="lbl" for="endKm">Ajo päättyy</label>
     <div class="row">
       <input type="text" class="km" id="endKm" inputmode="numeric" autocomplete="off" placeholder="km-lukema">
-      <button class="paste" data-target="endKm">📋 Liitä</button>
+      <button class="srv" data-target="endKm" data-info="endSrv" hidden>☁ Hae palvelimelta</button>
+      <button class="paste" data-target="endKm" aria-label="Liitä">📋<span class="ptxt"> Liitä</span></button>
     </div>
+    <div class="hint srvinfo" id="endSrv" hidden></div>
     <div class="hint" id="endHint"></div>
     <button class="primary" id="endBtn">Päätä ajo</button>
     <button class="ghost small" id="cancelRunBtn" style="margin-top:8px">Peru käynnissä oleva ajo</button>
@@ -277,7 +290,16 @@
   <!-- Asetukset -->
   <section class="card">
     <details>
-      <summary>Vakioselitteet ja varmuuskopio</summary>
+      <summary>Asetukset, vakioselitteet ja varmuuskopio</summary>
+      <label class="lbl" for="srvKey">Polestar-palvelun avain</label>
+      <div class="hint" style="margin-top:0">Avaimella km-lukeman voi hakea autosta napilla "Hae palvelimelta". Avain tallentuu vain tähän puhelimeen, ei varmuuskopioon.</div>
+      <input type="password" class="key" id="srvKey" autocomplete="off" spellcheck="false" placeholder="ps_…" style="margin-top:8px">
+      <div class="btnrow">
+        <button class="small" id="srvSave">Tallenna avain</button>
+        <button class="small" id="srvTest">Testaa yhteys</button>
+        <button class="small ghost" id="srvRemove">Poista avain</button>
+      </div>
+      <div class="hint" id="srvStatus"></div>
       <label class="lbl">Vakioselitteet</label>
       <ul class="presets" id="presetList"></ul>
       <label class="lbl">Varmuuskopio</label>
@@ -414,6 +436,139 @@
       }
     });
   });
+
+  // ---------- Polestar-palvelu: km-lukema autosta ----------
+  // Oma välityspalvelu (C:\ohjelmat\Polestar-palvelu, Cloudflare) kerää auton tiedot
+  // Polestarin rajapinnasta. Avain (oikeus km) on vain tämän laitteen localStoragessa
+  // sovelluskohtaisella nimellä — ei varmuuskopiossa. Osoitteen voi vaihtaa testiä
+  // varten avaimella ajopaivakirja:polestarUrl (ei käyttöliittymää).
+  const SRV_KEY = 'ajopaivakirja:polestarAvain';
+  const SRV_URL_KEY = 'ajopaivakirja:polestarUrl';
+  const SRV_DEFAULT = 'https://polestar-palvelu.tkoljonen.workers.dev';
+  const SRV_STALE_MIN = 15; // vanhempi lukema → kehotus tarkistaa mittarista
+
+  function srvKey() { try { return localStorage.getItem(SRV_KEY) || ''; } catch (e) { return ''; } }
+  function srvUrl() {
+    try { return (localStorage.getItem(SRV_URL_KEY) || SRV_DEFAULT).replace(/\/+$/, ''); }
+    catch (e) { return SRV_DEFAULT; }
+  }
+
+  // Hakee auton viimeisimmän km-lukeman. paivita=1 pyytää palvelua hakemaan
+  // tuoreimman tiedon suoraan Polestarilta (palvelu rajoittaa kertaan minuutissa).
+  async function fetchServerKm() {
+    const key = srvKey();
+    if (!key) throw new Error('Palvelun avain puuttuu (Asetukset).');
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    let res;
+    try {
+      res = await fetch(srvUrl() + '/v1/nyt?paivita=1', {
+        headers: { Authorization: 'Bearer ' + key }, cache: 'no-store', signal: ctrl.signal
+      });
+    } catch (e) {
+      throw new Error(navigator.onLine === false ? 'Ei verkkoyhteyttä.' : 'Palvelimeen ei saatu yhteyttä.');
+    } finally { clearTimeout(timer); }
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    const msg = data && typeof data.virhe === 'string' ? data.virhe : '';
+    if (res.status === 401 || res.status === 403) throw new Error('Avain ei kelpaa' + (msg ? ': ' + msg : '.'));
+    if (!res.ok) throw new Error('Palvelin vastasi ' + res.status + (msg ? ': ' + msg : ''));
+    const km = data && data.km;
+    if (!km || typeof km.km !== 'number' || !Number.isFinite(km.km)) throw new Error('Palvelimella ei ole vielä km-lukemaa.');
+    // Mittaristo näyttää kokonaiset kilometrit katkaistuina
+    const at = typeof km.aika === 'number' ? km.aika * 1000 : Date.parse(km.aika_iso) || null;
+    return { km: Math.floor(km.km), at: at };
+  }
+
+  function srvAge(at) {
+    if (!at) return 'ajankohta tuntematon';
+    const min = Math.round((Date.now() - at) / 60000);
+    if (min < 1) return 'juuri nyt';
+    if (min < 60) return min + ' min sitten';
+    return fmtDate(at);
+  }
+
+  document.querySelectorAll('button.srv').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const el = $(b.dataset.target);
+      const info = $(b.dataset.info);
+      const label = b.textContent;
+      b.disabled = true;
+      b.textContent = 'Haetaan…';
+      try {
+        const r = await fetchServerKm();
+        el.value = String(r.km);
+        el.dataset.srv = String(r.km);
+        el.dispatchEvent(new Event('input'));
+        const stale = r.at && Date.now() - r.at > SRV_STALE_MIN * 60000;
+        let txt = '☁ Auton lähettämä lukema ' + fmt(r.km) + ' km, ' + srvAge(r.at) + '.';
+        const run = running();
+        if (b.dataset.target === 'endKm' && run && r.km <= run.start) {
+          txt += ' Lukema ei ole muuttunut ajon alusta: auto lähettää lukeman yleensä muutaman minuutin kuluessa pysäköinnistä. Yritä hetken päästä uudelleen tai syötä mittarista.';
+        } else if (stale) {
+          txt += ' Auto ei ole lähettänyt uudempaa lukemaa – tarkista mittarista.';
+        }
+        info.textContent = txt;
+        info.classList.toggle('warn', !!stale || (b.dataset.target === 'endKm' && !!run && r.km <= run.start));
+        info.hidden = false;
+      } catch (e) {
+        info.textContent = '⚠️ ' + e.message + ' Voit syöttää lukeman käsin.';
+        info.classList.add('warn');
+        info.hidden = false;
+      } finally {
+        b.disabled = false;
+        b.textContent = label;
+      }
+    });
+  });
+  // Käsin muutettu arvo: palvelimen tieto ei enää koske kenttää
+  [['startKm', 'startSrv'], ['endKm', 'endSrv']].forEach(([inp, inf]) => {
+    $(inp).addEventListener('input', () => {
+      if ($(inp).dataset.srv && $(inp).value !== $(inp).dataset.srv) {
+        delete $(inp).dataset.srv;
+        $(inf).hidden = true;
+      }
+    });
+  });
+  function clearSrvInfo() {
+    ['startKm', 'endKm'].forEach((id) => { delete $(id).dataset.srv; });
+    ['startSrv', 'endSrv'].forEach((id) => { $(id).hidden = true; });
+  }
+  function updateSrvUi() {
+    const on = !!srvKey();
+    document.body.classList.toggle('srv-on', on);
+    document.querySelectorAll('button.srv').forEach((b) => { b.hidden = !on; });
+    $('srvRemove').hidden = !on;
+    $('srvTest').hidden = !on;
+  }
+
+  // Asetukset: avain
+  $('srvSave').addEventListener('click', () => {
+    const v = $('srvKey').value.trim();
+    if (!/^ps_[A-Za-z0-9_-]{20,}$/.test(v)) { $('srvStatus').textContent = '⚠️ Avain alkaa ps_ ja on pitkä merkkijono.'; return; }
+    try { localStorage.setItem(SRV_KEY, v); } catch (e) { toast('Tallennus epäonnistui!'); return; }
+    $('srvKey').value = '';
+    $('srvStatus').textContent = 'Avain tallennettu. Testaa yhteys.';
+    updateSrvUi();
+  });
+  $('srvTest').addEventListener('click', async () => {
+    $('srvStatus').textContent = 'Testataan…';
+    try {
+      const r = await fetchServerKm();
+      $('srvStatus').textContent = '✓ Yhteys toimii: ' + fmt(r.km) + ' km (' + srvAge(r.at) + ').';
+    } catch (e) {
+      $('srvStatus').textContent = '⚠️ ' + e.message;
+    }
+  });
+  $('srvRemove').addEventListener('click', () => {
+    if (!confirm('Poistetaanko palvelun avain tästä puhelimesta?')) return;
+    try { localStorage.removeItem(SRV_KEY); } catch (e) {}
+    $('srvStatus').textContent = 'Avain poistettu.';
+    clearSrvInfo();
+    updateSrvUi();
+  });
+  updateSrvUi();
+  $('srvStatus').textContent = srvKey() ? 'Avain on tallennettu.' : '';
 
   // "Käytä edellistä lukemaa" -napit
   document.querySelectorAll('button.prevbtn').forEach((b) => {
@@ -867,6 +1022,7 @@
     save();
     $('startKm').value = '';
     $('startHint').textContent = '';
+    clearSrvInfo();
     render();
     toast('Ajo aloitettu');
   });
@@ -889,6 +1045,7 @@
     save();
     $('endKm').value = '';
     $('endHint').textContent = '';
+    clearSrvInfo();
     justEndedId = r.id;
     $('tagKm').textContent = fmt(r.end - r.start) + ' km';
     setSeg($('tagDriver'), null);
@@ -902,6 +1059,7 @@
     const r = running();
     if (!r || !confirm('Perutaanko käynnissä oleva ajo (alkulukema ' + fmt(r.start) + ')?')) return;
     db.trips = db.trips.filter((t) => t !== r);
+    clearSrvInfo();
     save(); render();
   });
 
