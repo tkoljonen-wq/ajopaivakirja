@@ -165,6 +165,18 @@
   .srow.other .bar > div { background: var(--muted); }
   .srow.gap { opacity: .75; }
   .srow.gap .bar > div { background: var(--line); }
+  /* Paikat ja sijaintiehdotus */
+  .locsug { font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .locsug .on { color: var(--timppa); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chips button { min-height: 34px; padding: 0 12px; font-size: 14px; border-radius: 99px; }
+  .placebtn { width: 100%; margin-top: 10px; }
+  .places { list-style: none; padding: 0; margin: 8px 0 0; }
+  .places li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .places .nm { overflow-wrap: anywhere; }
+  .places .co { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .places .ed { grid-row: 1 / span 2; grid-column: 2; align-self: center; color: var(--muted); font-size: 14px; }
+  a { color: #93c5fd; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -252,6 +264,7 @@
     <div class="hint srvinfo" id="endSrv" hidden></div>
     <div class="hint" id="endHint"></div>
     <button class="primary" id="endBtn">Päätä ajo</button>
+    <button class="small placebtn" data-place-here>📍 Tallenna selite tälle sijainnille</button>
     <button class="ghost small" id="cancelRunBtn" style="margin-top:8px">Peru käynnissä oleva ajo</button>
   </section>
 
@@ -290,7 +303,14 @@
   <!-- Asetukset -->
   <section class="card">
     <details>
-      <summary>Asetukset, vakioselitteet ja varmuuskopio</summary>
+      <summary>Asetukset, paikat, vakioselitteet ja varmuuskopio</summary>
+      <label class="lbl">Paikat (selite sijainnin mukaan)</label>
+      <div class="hint" style="margin-top:0">Kun auto on ajon aikana pysäköity alle 150 m päähän tallennetusta paikasta, ajolle ehdotetaan paikan selitettä. Vaatii Polestar-palvelun avaimen (auton sijainti).</div>
+      <ul class="places" id="placeList"></ul>
+      <div class="btnrow">
+        <button class="small" data-place-here>📍 Tallenna selite tälle sijainnille</button>
+        <button class="small" id="placeAddBtn">+ Lisää koordinaateilla</button>
+      </div>
       <label class="lbl" for="srvKey">Polestar-palvelun avain</label>
       <div class="hint" style="margin-top:0">Avaimella km-lukeman voi hakea autosta napilla "Hae palvelimelta". Avain tallentuu vain tähän puhelimeen, ei varmuuskopioon.</div>
       <input type="password" class="key" id="srvKey" autocomplete="off" spellcheck="false" placeholder="ps_…" style="margin-top:8px">
@@ -337,6 +357,25 @@
   </div>
 </dialog>
 
+<!-- Paikkadialogi -->
+<dialog id="placeDlg">
+  <h2 id="placeTitle" tabindex="-1" autofocus style="outline:none">Paikka</h2>
+  <label class="lbl" for="pCoord">Koordinaatit (leveys, pituus)</label>
+  <input type="text" id="pCoord" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="esim. 60.948118, 25.900513">
+  <div class="btnrow">
+    <button class="small" id="pPaste">📋 Liitä</button>
+    <button class="small" id="pCar">🚗 Auton sijainti</button>
+    <button class="small" id="pPhone">📱 Puhelimen sijainti</button>
+  </div>
+  <div class="hint" id="pHint"></div>
+  <div id="pNote"></div>
+  <div class="dlgbtns">
+    <button id="pDelete" class="danger">Poista</button>
+    <button id="pCancel">Peruuta</button>
+    <button id="pSave" class="primary" style="margin-top:0">Tallenna</button>
+  </div>
+</dialog>
+
 <div id="toast"></div>
 
 <script>
@@ -374,7 +413,17 @@
     const presets = Array.isArray(d.presets)
       ? [...new Set(d.presets.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().slice(0, 200)))]
       : [];
-    return { trips: clean, presets: presets };
+    // Paikat: koordinaatit + selite. Sijainti on henkilötietoa: se pysyy tässä puhelimessa
+    // (ja käyttäjän omassa varmuuskopiossa), sitä ei lähetetä minnekään.
+    const places = Array.isArray(d.places) ? d.places.map((p) => {
+      if (!p || typeof p !== 'object') return null;
+      const lat = typeof p.lat === 'number' && Number.isFinite(p.lat) && Math.abs(p.lat) <= 90 ? +p.lat.toFixed(6) : null;
+      const lon = typeof p.lon === 'number' && Number.isFinite(p.lon) && Math.abs(p.lon) <= 180 ? +p.lon.toFixed(6) : null;
+      const note = typeof p.note === 'string' ? p.note.trim().slice(0, 200) : '';
+      if (lat == null || lon == null || !note) return null;
+      return { id: typeof p.id === 'string' && /^[a-z0-9]{1,40}$/i.test(p.id) ? p.id : uid(), lat: lat, lon: lon, note: note };
+    }).filter(Boolean) : [];
+    return { trips: clean, presets: presets, places: places };
   }
 
   function load() {
@@ -382,7 +431,7 @@
       const d = normalize(JSON.parse(localStorage.getItem(STORE_KEY)));
       if (d) return d;
     } catch (e) {}
-    return { trips: [], presets: [] };
+    return { trips: [], presets: [], places: [] };
   }
   function save() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
@@ -455,14 +504,14 @@
 
   // Hakee auton viimeisimmän km-lukeman. paivita=1 pyytää palvelua hakemaan
   // tuoreimman tiedon suoraan Polestarilta (palvelu rajoittaa kertaan minuutissa).
-  async function fetchServerKm() {
+  async function srvGet(path) {
     const key = srvKey();
     if (!key) throw new Error('Palvelun avain puuttuu (Asetukset).');
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 20000);
     let res;
     try {
-      res = await fetch(srvUrl() + '/v1/nyt?paivita=1', {
+      res = await fetch(srvUrl() + path, {
         headers: { Authorization: 'Bearer ' + key }, cache: 'no-store', signal: ctrl.signal
       });
     } catch (e) {
@@ -473,6 +522,12 @@
     const msg = data && typeof data.virhe === 'string' ? data.virhe : '';
     if (res.status === 401 || res.status === 403) throw new Error('Avain ei kelpaa' + (msg ? ': ' + msg : '.'));
     if (!res.ok) throw new Error('Palvelin vastasi ' + res.status + (msg ? ': ' + msg : ''));
+    if (!data || typeof data !== 'object') throw new Error('Palvelimen vastaus ei kelpaa.');
+    return data;
+  }
+
+  async function fetchServerKm() {
+    const data = await srvGet('/v1/nyt?paivita=1');
     const km = data && data.km;
     if (!km || typeof km.km !== 'number' || !Number.isFinite(km.km)) throw new Error('Palvelimella ei ole vielä km-lukemaa.');
     // Mittaristo näyttää kokonaiset kilometrit katkaistuina
@@ -570,6 +625,76 @@
   updateSrvUi();
   $('srvStatus').textContent = srvKey() ? 'Avain on tallennettu.' : '';
 
+  // ---------- Paikat: selite auton pysäköintipaikan perusteella ----------
+  // Auto lähettää sijainnin pysäköitäessä (ajon aikana näytteitä ei tule), joten ajon
+  // aikaikkunan sijaintinäytteet = pysähdyspaikat. Sijaintihistoria haetaan vain omasta
+  // Polestar-palvelusta, eikä sitä tallenneta: tähän puhelimeen jäävät vain paikat.
+  const PLACE_RADIUS_M = 150;
+  const END_MARGIN_MS = 15 * 60000; // loppupaikan näyte voi tulla hetken ajon päättämisen jälkeen
+  const MAX_WINDOW_MS = 31 * 86400000;
+
+  function distM(aLat, aLon, bLat, bLon) {
+    const R = 6371000, rad = Math.PI / 180;
+    const dLat = (bLat - aLat) * rad, dLon = (bLon - aLon) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+  // Lähin tallennettu paikka säteen sisällä (exceptId = muokattava paikka itse)
+  function nearestPlace(lat, lon, exceptId, radius) {
+    let best = null;
+    db.places.forEach((p) => {
+      if (p.id === exceptId) return;
+      const d = distM(lat, lon, p.lat, p.lon);
+      if (d <= (radius || PLACE_RADIUS_M) && (!best || d < best.d)) best = { place: p, d: d };
+    });
+    return best;
+  }
+  // "60.948118, 25.900513" (Google Maps), myös "60.948118 25.900513" ja "…@60.94,25.90,17z"
+  function parseCoords(s) {
+    const m = /(-?\d{1,2}\.\d+)\s*[,;\s]\s*(-?\d{1,3}\.\d+)/.exec(String(s || ''));
+    if (!m) return null;
+    const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+    if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) return null;
+    return { lat: +lat.toFixed(6), lon: +lon.toFixed(6) };
+  }
+  const fmtCoord = (c) => c.lat.toFixed(6) + ', ' + c.lon.toFixed(6);
+  const mapsUrl = (c) => 'https://www.google.com/maps/search/?api=1&query=' + c.lat.toFixed(6) + '%2C' + c.lon.toFixed(6);
+  const ymd = (ts) => { const d = new Date(ts); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const canSuggest = () => !!srvKey() && db.places.length > 0;
+
+  // Auton sijaintinäytteet aikavälille (ms). Mukaan edellinen päivä, jotta lähtöpaikka löytyy.
+  async function fetchCarPositions(from, to) {
+    const data = await srvGet('/v1/sijainnit?alku=' + ymd(from - 86400000) + '&loppu=' + ymd(to));
+    const list = Array.isArray(data.naytteet) ? data.naytteet : [];
+    return list
+      .filter((n) => n && typeof n.aika === 'number' && typeof n.lat === 'number' && typeof n.lon === 'number' &&
+        Number.isFinite(n.lat) && Number.isFinite(n.lon))
+      .map((n) => ({ t: n.aika * 1000, lat: n.lat, lon: n.lon }))
+      .sort((a, b) => a.t - b.t);
+  }
+
+  // Selite-ehdotukset ajolle: pysähdyspaikat aikajärjestyksessä. Lähtöpaikka jätetään pois
+  // (koti → kauppa → koti antaa "kauppa", vaikka kotikin olisi tallennettu), ellei muuta löydy.
+  async function suggestNotes(from, to, margin) {
+    if (!from || !to || to < from || to - from > MAX_WINDOW_MS) return [];
+    const pos = await fetchCarPositions(from, to);
+    const before = pos.filter((p) => p.t <= from).pop();
+    const startMatch = before ? nearestPlace(before.lat, before.lon) : null;
+    const found = [];
+    pos.filter((p) => p.t > from && p.t <= to + margin).forEach((p) => {
+      const m = nearestPlace(p.lat, p.lon);
+      if (m && !found.includes(m.place)) found.push(m.place);
+    });
+    let list = found.filter((p) => !startMatch || p !== startMatch.place);
+    if (!list.length && startMatch) list = [startMatch.place];
+    const seen = new Set();
+    return list.map((p) => p.note).filter((n) => {
+      const k = n.toLocaleLowerCase('fi');
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+  }
+
   // "Käytä edellistä lukemaa" -napit
   document.querySelectorAll('button.prevbtn').forEach((b) => {
     b.addEventListener('click', () => {
@@ -611,15 +736,89 @@
       '<label class="lbl">Selite</label>' +
       '<select class="preset"></select>' +
       '<input type="text" class="note" placeholder="Vapaa selite" style="margin-top:8px" autocomplete="off">' +
+      '<div class="locsug" hidden></div>' +
       '<label class="check"><input type="checkbox" class="savePreset"> Tallenna vakiovastaukseksi</label>';
     const sel = container.querySelector('select');
     const input = container.querySelector('input.note');
     const chk = container.querySelector('input.savePreset');
+    const sug = container.querySelector('.locsug');
+    let sugToken = 0;
     sel.addEventListener('change', () => {
       if (sel.value) { input.value = sel.value; chk.checked = false; }
       sel.value = '';
     });
+
+    function chipRow(notes, label) {
+      const row = document.createElement('div');
+      row.className = 'chips';
+      notes.forEach((n) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = (label || '') + n;
+        b.addEventListener('click', () => { input.value = n; chk.checked = false; });
+        row.appendChild(b);
+      });
+      return row;
+    }
+    function lazyButton(from, to, opts, text) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'small';
+      b.style.marginTop = '6px';
+      b.textContent = text;
+      b.addEventListener('click', () => api.suggest(from, to, Object.assign({}, opts, { lazy: false })));
+      return b;
+    }
+
     const api = {
+      // Selite-ehdotus auton pysähdyspaikoista. opts: margin, auto (täytä tyhjä kenttä),
+      // lazy (vain nappi), onAuto(note) (kutsutaan kun tyhjä kenttä täytettiin)
+      async suggest(from, to, opts) {
+        opts = opts || {};
+        const my = ++sugToken;
+        sug.innerHTML = '';
+        sug.hidden = !(canSuggest() && from && to && to >= from);
+        if (sug.hidden) return;
+        if (opts.lazy) { sug.appendChild(lazyButton(from, to, opts, '📍 Ehdota selitettä sijainnista')); return; }
+        sug.textContent = '📍 Haetaan auton pysähdyspaikkoja…';
+        let notes;
+        try { notes = await suggestNotes(from, to, opts.margin || 0); }
+        catch (e) {
+          if (my !== sugToken) return;
+          sug.textContent = '📍 Sijaintia ei saatu: ' + e.message + ' ';
+          sug.appendChild(lazyButton(from, to, opts, 'Yritä uudelleen'));
+          return;
+        }
+        if (my !== sugToken) return;
+        sug.innerHTML = '';
+        if (!notes.length) {
+          sug.textContent = '📍 Pysähdyspaikoista ei löytynyt tallennettua paikkaa (säde ' + PLACE_RADIUS_M + ' m). ';
+          sug.appendChild(lazyButton(from, to, opts, 'Hae uudelleen'));
+          return;
+        }
+        let filled = false;
+        if (opts.auto && !input.value.trim()) {
+          input.value = notes[0];
+          chk.checked = false;
+          filled = true;
+          if (opts.onAuto) opts.onAuto(notes[0]);
+        }
+        const head = document.createElement('div');
+        const on = document.createElement('span');
+        on.className = 'on';
+        on.textContent = filled ? '📍 Selite asetettu sijainnin perusteella. ' : '📍 Sijainnin perusteella: ';
+        head.appendChild(on);
+        if (filled) {
+          head.appendChild(document.createTextNode(notes.length > 1 ? 'Muut pysähdykset:' : 'Voit muokata sitä.'));
+          sug.appendChild(head);
+          if (notes.length > 1) sug.appendChild(chipRow(notes.slice(1)));
+        } else {
+          head.appendChild(document.createTextNode('napauta käyttääksesi.'));
+          sug.appendChild(head);
+          sug.appendChild(chipRow(notes));
+        }
+      },
+      clearSuggest() { sugToken++; sug.innerHTML = ''; sug.hidden = true; },
       refresh() {
         sel.innerHTML = '';
         const o = new Option(db.presets.length ? 'Valitse vakioselite…' : 'Ei vakioselitteitä vielä', '');
@@ -749,6 +948,7 @@
     renderGaps();
     renderList();
     renderPresets();
+    renderPlaces();
     renderStats();
   }
 
@@ -991,7 +1191,7 @@
       b.textContent = '✕ Poista';
       b.addEventListener('click', () => {
         db.presets = db.presets.filter((x) => x !== p);
-        save(); tagNote.refresh(); editNote.refresh(); render();
+        save(); refreshNoteFields(); render();
       });
       li.append(span, b);
       ul.appendChild(li);
@@ -1051,6 +1251,15 @@
     setSeg($('tagDriver'), null);
     tagNote.refresh();
     tagNote.value = '';
+    // Selite pysähdyspaikasta: tallennetaan ajolle heti (myös jos merkintä ohitetaan)
+    const endedId = r.id;
+    tagNote.suggest(r.startedAt, r.endedAt, {
+      auto: true, margin: END_MARGIN_MS,
+      onAuto: (note) => {
+        const t = db.trips.find((x) => x.id === endedId);
+        if (t && !t.note) { t.note = note; save(); renderList(); }
+      }
+    });
     render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
@@ -1066,6 +1275,7 @@
   // ---------- Päättyneen ajon merkintä ----------
   $('tagSave').addEventListener('click', () => {
     const t = db.trips.find((x) => x.id === justEndedId);
+    tagNote.clearSuggest(); // käyttäjän valinta ratkaisee, kesken oleva haku ei enää muuta selitettä
     if (t) {
       t.driver = segValue($('tagDriver')) || '';
       t.note = tagNote.value;
@@ -1073,7 +1283,7 @@
       save();
     }
     justEndedId = null;
-    tagNote.refresh(); editNote.refresh();
+    refreshNoteFields();
     render();
     toast('Ajo tallennettu');
   });
@@ -1105,6 +1315,13 @@
     const lr = lastReading();
     pb.hidden = !!t || !!gap || lr == null;
     if (lr != null) pb.textContent = '↺ Käytä edellistä lukemaa (' + fmt(lr) + ')';
+    // Selite-ehdotus sijainnista: kirjaamattomalle välille ja selitteettömälle ajolle heti,
+    // muille napista. Arvioidun ajankohdan ajoille ikkuna on epätarkka, joten vain napista.
+    editNote.clearSuggest();
+    if (gap) editNote.suggest(gap.from, gap.to, { auto: true });
+    else if (t && t.end != null && t.endedAt) {
+      editNote.suggest(t.startedAt, t.endedAt, { auto: true, lazy: !!t.note || t.est, margin: t.est ? 0 : END_MARGIN_MS });
+    }
     dlg.showModal();
   }
 
@@ -1139,7 +1356,7 @@
     editNote.commitPreset();
     if (justEndedId === t.id) justEndedId = null;
     save();
-    tagNote.refresh();
+    refreshNoteFields();
     dlg.close();
     render();
     toast('Tallennettu');
@@ -1152,6 +1369,142 @@
     save(); dlg.close(); render();
     toast('Ajo poistettu');
   });
+
+  dlg.addEventListener('close', () => editNote.clearSuggest());
+
+  // ---------- Paikkadialogi ----------
+  const pdlg = $('placeDlg');
+  const placeNote = makeNoteField($('pNote'));
+  let placeEditId = null;
+  let pSrcText = ''; // mistä koordinaatit tulivat (auto / puhelin)
+
+  function updatePlaceHint() {
+    const hint = $('pHint');
+    hint.innerHTML = '';
+    const raw = $('pCoord').value.trim();
+    if (!raw) { hint.textContent = pSrcText; return; }
+    const c = parseCoords(raw);
+    if (!c) { hint.textContent = '⚠️ Muoto: leveys, pituus – esim. 60.948118, 25.900513'; return; }
+    if (pSrcText) hint.appendChild(document.createTextNode(pSrcText + ' '));
+    const a = document.createElement('a');
+    a.href = mapsUrl(c);
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = 'Näytä kartalla';
+    hint.appendChild(a);
+    const near = nearestPlace(c.lat, c.lon, placeEditId, PLACE_RADIUS_M * 2);
+    if (near) {
+      hint.appendChild(document.createTextNode(' · Lähellä (' + Math.round(near.d) + ' m) on jo paikka "' + near.place.note + '"' +
+        (near.d <= PLACE_RADIUS_M ? ' – tallennettaessa kysytään, korvataanko se.' : '.')));
+    }
+  }
+  $('pCoord').addEventListener('input', () => { pSrcText = ''; updatePlaceHint(); });
+
+  function setPlaceCoords(c, src) {
+    $('pCoord').value = fmtCoord(c);
+    pSrcText = src;
+    updatePlaceHint();
+  }
+
+  async function locateCar() {
+    $('pHint').textContent = '🚗 Haetaan auton sijaintia…';
+    try {
+      const data = await srvGet('/v1/nyt?paivita=1');
+      const s = data.sijainti;
+      if (!s || typeof s.lat !== 'number' || typeof s.lon !== 'number') throw new Error('Palvelimella ei ole auton sijaintia (tarvitaan oikeus "sijainti").');
+      const at = typeof s.aika === 'number' ? s.aika * 1000 : null;
+      setPlaceCoords({ lat: s.lat, lon: s.lon }, '🚗 Auton sijainti, ' + srvAge(at) + '.');
+    } catch (e) {
+      $('pHint').textContent = '⚠️ ' + e.message + ' Kokeile puhelimen sijaintia.';
+    }
+  }
+  function locatePhone() {
+    if (!navigator.geolocation) { $('pHint').textContent = '⚠️ Puhelin ei tue sijaintia.'; return; }
+    $('pHint').textContent = '📱 Haetaan puhelimen sijaintia…';
+    navigator.geolocation.getCurrentPosition((p) => {
+      setPlaceCoords({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) },
+        '📱 Puhelimen sijainti (tarkkuus ±' + Math.round(p.coords.accuracy) + ' m).');
+    }, (err) => {
+      $('pHint').textContent = err.code === 1 ? '⚠️ Sijaintilupa evätty. Salli sijainti selaimen asetuksista.' : '⚠️ Sijaintia ei saatu.';
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
+  }
+  $('pCar').addEventListener('click', locateCar);
+  $('pPhone').addEventListener('click', locatePhone);
+  $('pPaste').addEventListener('click', async () => {
+    try {
+      const txt = await navigator.clipboard.readText();
+      const c = parseCoords(txt);
+      if (!c) { toast('Leikepöydällä ei ole koordinaatteja'); return; }
+      setPlaceCoords(c, '');
+    } catch (e) {
+      $('pCoord').focus();
+      toast('Liitä painamalla kenttää pitkään');
+    }
+  });
+
+  // locate: 'auto' = auton sijainti jos avain on, muuten puhelimen
+  function openPlace(id, locate) {
+    const p = id ? db.places.find((x) => x.id === id) : null;
+    placeEditId = p ? p.id : null;
+    pSrcText = '';
+    $('placeTitle').textContent = p ? 'Muokkaa paikkaa' : 'Uusi paikka';
+    $('pCoord').value = p ? fmtCoord(p) : '';
+    placeNote.refresh();
+    placeNote.value = p ? p.note : '';
+    $('pDelete').hidden = !p;
+    $('pCar').hidden = !srvKey();
+    updatePlaceHint();
+    pdlg.showModal();
+    if (locate) { if (srvKey()) locateCar(); else locatePhone(); }
+  }
+  document.querySelectorAll('[data-place-here]').forEach((b) => b.addEventListener('click', () => openPlace(null, true)));
+  $('placeAddBtn').addEventListener('click', () => openPlace(null, false));
+  $('pCancel').addEventListener('click', () => pdlg.close());
+  $('pSave').addEventListener('click', () => {
+    const c = parseCoords($('pCoord').value);
+    if (!c) { toast('Anna koordinaatit, esim. 60.948118, 25.900513'); return; }
+    const note = placeNote.value;
+    if (!note) { toast('Anna selite'); return; }
+    const near = nearestPlace(c.lat, c.lon, placeEditId);
+    if (near && confirm('Alle ' + PLACE_RADIUS_M + ' m päässä (' + Math.round(near.d) + ' m) on jo paikka "' + near.place.note +
+        '". Korvataanko se tällä?\n\nPeruuta = säilytä molemmat (lähempi paikka valitaan).')) {
+      db.places = db.places.filter((x) => x !== near.place);
+    }
+    let p = placeEditId ? db.places.find((x) => x.id === placeEditId) : null;
+    if (!p) { p = { id: uid() }; db.places.push(p); }
+    p.lat = c.lat; p.lon = c.lon; p.note = note.slice(0, 200);
+    placeNote.commitPreset();
+    save();
+    refreshNoteFields();
+    pdlg.close();
+    render();
+    toast('Paikka tallennettu');
+  });
+  $('pDelete').addEventListener('click', () => {
+    if (!confirm('Poistetaanko paikka?')) return;
+    db.places = db.places.filter((x) => x.id !== placeEditId);
+    save(); pdlg.close(); render();
+    toast('Paikka poistettu');
+  });
+
+  function renderPlaces() {
+    const ul = $('placeList');
+    ul.innerHTML = '';
+    if (!db.places.length) {
+      ul.innerHTML = '<li class="empty" style="cursor:default">Ei paikkoja vielä.</li>';
+      return;
+    }
+    db.places.slice().sort((a, b) => a.note.localeCompare(b.note, 'fi')).forEach((p) => {
+      const li = document.createElement('li');
+      li.innerHTML = '<div class="nm"></div><div class="co"></div><div class="ed">Muokkaa ›</div>';
+      li.querySelector('.nm').textContent = p.note;
+      li.querySelector('.co').textContent = fmtCoord(p);
+      li.addEventListener('click', () => openPlace(p.id, false));
+      ul.appendChild(li);
+    });
+  }
+
+  function refreshNoteFields() { tagNote.refresh(); editNote.refresh(); placeNote.refresh(); }
 
   // ---------- Varmuuskopio ----------
   $('exportBtn').addEventListener('click', () => {
@@ -1171,10 +1524,10 @@
     try {
       const d = normalize(JSON.parse(await f.text()));
       if (!d) throw new Error();
-      if (!confirm('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.trips.length + ' ajoa)?')) return;
+      if (!confirm('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.trips.length + ' ajoa, ' + d.places.length + ' paikkaa)?')) return;
       db = d;
       justEndedId = null;
-      save(); tagNote.refresh(); editNote.refresh(); render();
+      save(); refreshNoteFields(); render();
       toast('Varmuuskopio palautettu');
     } catch (err) {
       toast('Tiedosto ei ole kelvollinen varmuuskopio');
