@@ -181,6 +181,10 @@
   .places .ov:empty { display: none; }
   .pwarn { color: #fbbf24; }
   input.radius { width: 7em; font-variant-numeric: tabular-nums; }
+  /* Keskipiste: 44 px kosketusalue, näkyvä pallo keskellä */
+  .pmark { cursor: grab; touch-action: none; }
+  .pmark span { display: block; margin: 13px auto 0; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  .pmark.leaflet-drag-target span, .pmark:active span { transform: scale(1.3); }
   #pMap { height: 300px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
   #pMap .leaflet-tooltip { font-size: 13px; }
   a { color: #93c5fd; }
@@ -394,7 +398,7 @@
   <button class="small" id="pMapBtn" style="margin-top:8px">🗺️ Näytä alue kartalla</button>
   <div id="pMapWrap" hidden>
     <div id="pMap"></div>
-    <div class="hint" id="pMapHint">Sininen = tämä paikka, harmaa = muut paikat, punainen = päällekkäin. Napauta karttaa siirtääksesi paikan keskipisteen. Kartta haetaan OpenStreetMapista vain kun avaat sen.</div>
+    <div class="hint" id="pMapHint">Sininen = tämä paikka, harmaa = muut paikat, punainen = päällekkäin. Raahaa keskipistettä tai napauta karttaa siirtääksesi paikkaa. Kartta haetaan OpenStreetMapista vain kun avaat sen.</div>
   </div>
   <div id="pNote"></div>
   <label class="lbl" for="pLabel">Lisäselite (vapaaehtoinen) – erottaa saman selitteen paikat listalla</label>
@@ -1558,7 +1562,15 @@
     if (!a) return;
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3b82f6';
     const circ = L.circle([a.lat, a.lon], { radius: r, color: accent, weight: 3, fillOpacity: 0.2 }).addTo(pLayer);
-    L.circleMarker([a.lat, a.lon], { radius: 5, color: '#fff', weight: 2, fillColor: accent, fillOpacity: 1 }).addTo(pLayer);
+    // Raahattava keskipiste: rengas seuraa raahausta, koordinaatit päivittyvät kun piste päästetään
+    const icon = L.divIcon({ className: 'pmark', html: '<span></span>', iconSize: [44, 44], iconAnchor: [22, 22] });
+    const mk = L.marker([a.lat, a.lon], { icon: icon, draggable: true, autoPan: true, keyboard: false, zIndexOffset: 1000 }).addTo(pLayer);
+    mk.on('dragstart', () => circ.closeTooltip());
+    mk.on('drag', (e) => circ.setLatLng(e.target.getLatLng()));
+    mk.on('dragend', (e) => {
+      const ll = e.target.getLatLng();
+      setPlaceCoords({ lat: +ll.lat.toFixed(6), lon: +ll.lng.toFixed(6) }, '🗺️ Siirretty kartalla.', true);
+    });
     const lbl = $('pLabel').value.trim();
     const label = (placeNote.value || 'Tämä paikka') + (lbl ? ' – ' + lbl : '') + ' · ' + r + ' m';
     circ.bindTooltip(textEl(label), { permanent: true, direction: 'top', offset: [0, -8] });
