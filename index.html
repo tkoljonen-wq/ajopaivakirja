@@ -185,6 +185,14 @@
   .pmark { cursor: grab; touch-action: none; }
   .pmark span { display: block; margin: 13px auto 0; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
   .pmark.leaflet-drag-target span, .pmark:active span { transform: scale(1.3); }
+  #eMap { height: 260px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+  #eMap .leaflet-tooltip { font-size: 13px; }
+  /* Ajon pisteet: A = lähtö, numerot = pysähdykset, viimeinen punainen */
+  .rmark { display: block; }
+  .rmark span { display: block; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+    border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); font: 700 13px/22px system-ui, sans-serif; text-align: center; }
+  .rmark.start span { background: #10b981; }
+  .rmark.end span { background: #ef4444; }
   #pMap { height: 300px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
   #pMap .leaflet-tooltip { font-size: 13px; }
   a { color: #93c5fd; }
@@ -361,6 +369,11 @@
 <!-- Muokkausdialogi -->
 <dialog id="editDlg">
   <h2 id="editTitle" tabindex="-1" autofocus style="outline:none">Muokkaa ajoa</h2>
+  <button class="small" id="eMapBtn" hidden>🗺️ Näytä ajon pisteet kartalla</button>
+  <div id="eMapWrap" hidden>
+    <div id="eMap"></div>
+    <div class="hint" id="eMapHint"></div>
+  </div>
   <label class="lbl" for="eStart">Alkulukema (km)</label>
   <input type="text" class="km" id="eStart" inputmode="numeric" autocomplete="off">
   <button class="small prevbtn" data-target="eStart" hidden>↺ Käytä edellistä lukemaa</button>
@@ -1399,7 +1412,10 @@
     else if (t && t.end != null && t.endedAt) {
       editNote.suggest(t.startedAt, t.endedAt, { auto: true, lazy: !!t.note || t.est, margin: t.est ? 0 : END_MARGIN_MS });
     }
+    const mapOk = prepTripMap(t, gap);
     dlg.showModal();
+    // Kartta aukeaa itsestään päättyneelle ajolle / välille, ellei käyttäjä ole piilottanut sitä
+    if (mapOk && (gap || (t && t.end != null)) && lsGet(TRIPMAP_KEY) !== '0') showTripMap();
   }
 
   $('addManualBtn').addEventListener('click', () => openEdit(null));
@@ -1447,7 +1463,116 @@
     toast('Ajo poistettu');
   });
 
-  dlg.addEventListener('close', () => editNote.clearSuggest());
+  dlg.addEventListener('close', () => { editNote.clearSuggest(); eMapToken++; });
+
+  // ---------- Ajon pisteet kartalla ----------
+  // Auto lähettää sijainnin pysäköitäessä, joten ajon pisteet ovat lähtöpaikka ja pysähdykset.
+  // Pisteitä ei tallenneta: ne haetaan omasta Polestar-palvelusta joka kerta.
+  const TRIPMAP_KEY = 'ajopaivakirja:tripMap'; // '0' = käyttäjä piilotti kartan, ei avata automaattisesti
+  let eMap = null, eLayer = null, eMapToken = 0, eWin = null;
+  const eMapOpen = () => !$('eMapWrap').hidden;
+  function setEMapOpen(open) {
+    $('eMapWrap').hidden = !open;
+    $('eMapBtn').textContent = open ? '🗺️ Piilota kartta' : '🗺️ Näytä ajon pisteet kartalla';
+  }
+  const fmtTime = (ts) => new Date(ts).toLocaleString('fi-FI', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  // Ajon pisteet: lähtö (viimeinen näyte ennen alkua) + näytteet ajon aikana. Peräkkäiset
+  // näytteet samassa paikassa (alle 30 m) yhdistetään yhdeksi pisteeksi.
+  async function tripPoints(w) {
+    const pos = await fetchCarPositions(w.from, w.to);
+    const before = pos.filter((p) => p.t <= w.from).pop();
+    const during = pos.filter((p) => p.t > w.from && p.t <= w.to + w.margin);
+    const pts = [];
+    (before ? [before] : []).concat(during).forEach((p) => {
+      const last = pts[pts.length - 1];
+      if (last && distM(last.lat, last.lon, p.lat, p.lon) < 30) { last.tEnd = p.t; return; }
+      pts.push({ lat: p.lat, lon: p.lon, t: p.t, tEnd: p.t, start: p === before });
+    });
+    return pts;
+  }
+
+  async function showTripMap() {
+    const w = eWin;
+    if (!w) return;
+    const my = ++eMapToken;
+    setEMapOpen(true);
+    const hint = $('eMapHint');
+    hint.textContent = '📍 Haetaan auton sijainteja…';
+    let L, pts;
+    try { [L, pts] = await Promise.all([loadLeaflet(), tripPoints(w)]); }
+    catch (e) { if (my === eMapToken) hint.textContent = '⚠️ ' + e.message; return; }
+    if (my !== eMapToken) return;
+    if (!eMap) {
+      eMap = L.map('eMap', { zoomControl: true });
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'
+      }).addTo(eMap);
+      eLayer = L.layerGroup().addTo(eMap);
+    }
+    eMap.invalidateSize();
+    eLayer.clearLayers();
+    if (!pts.length) {
+      eMap.setView([60.95, 25.9], 9);
+      hint.textContent = 'Ajon ajalta ei löytynyt auton sijainteja.';
+      return;
+    }
+    const lls = pts.map((p) => [p.lat, p.lon]);
+    if (lls.length > 1) L.polyline(lls, { color: '#93c5fd', weight: 3, dashArray: '6 8', opacity: 0.9 }).addTo(eLayer);
+    // Samaan kohtaan osuvat pisteet (esim. edestakainen ajo: lähtö = loppu) yhdeksi merkiksi "A·3"
+    const groups = [];
+    let n = 0;
+    pts.forEach((p, i) => {
+      const isEnd = i === pts.length - 1 && !p.start;
+      const txt = p.start ? 'A' : String(++n);
+      const when = p.start ? 'Lähtö (pysäköity ' + fmtTime(p.t) + ')'
+        : (isEnd ? 'Loppu, ' : 'Pysähdys ' + txt + ', ') + fmtTime(p.t) + (p.tEnd - p.t > 60000 ? '–' + new Date(p.tEnd).toLocaleTimeString('fi-FI', { hour: '2-digit', minute: '2-digit' }) : '');
+      let g = groups.find((x) => distM(x.lat, x.lon, p.lat, p.lon) < 30);
+      if (!g) { g = { lat: p.lat, lon: p.lon, labels: [], lines: [], start: false, end: false }; groups.push(g); }
+      g.labels.push(txt); g.lines.push(when);
+      if (p.start) g.start = true;
+      if (isEnd) g.end = true;
+    });
+    groups.forEach((g) => {
+      const label = g.labels.join('·'); // aina "A" ja numeroita (ei käyttäjän tekstiä), joten HTML:ään turvallisesti
+      const w = Math.max(26, 12 + label.length * 8);
+      const icon = L.divIcon({ className: 'rmark' + (g.end ? ' end' : g.start ? ' start' : ''), html: '<span style="width:' + w + 'px;border-radius:13px">' + label + '</span>', iconSize: [w, 26], iconAnchor: [w / 2, 13] });
+      const mk = L.marker([g.lat, g.lon], { icon: icon, keyboard: false, zIndexOffset: g.end ? 500 : 0 }).addTo(eLayer);
+      const near = nearestPlace(g.lat, g.lon);
+      const tip = document.createElement('div');
+      if (near) { const b = document.createElement('b'); b.textContent = placeName(near.place); tip.appendChild(b); }
+      g.lines.forEach((l) => { const d = document.createElement('div'); d.textContent = l; tip.appendChild(d); });
+      mk.bindTooltip(tip, { direction: 'top', offset: [0, -12] });
+    });
+    if (lls.length === 1) eMap.setView(lls[0], 15);
+    else eMap.fitBounds(L.latLngBounds(lls), { padding: [28, 28], maxZoom: 16 });
+    const stops = pts.filter((p) => !p.start).length;
+    hint.textContent = (pts[0].start ? 'A = lähtöpaikka, ' : '') + stops + (stops === 1 ? ' pysähdys' : ' pysähdystä') +
+      ' (punainen = viimeinen). Auto lähettää sijainnin vain pysäköitäessä, joten katkoviiva yhdistää pysähdykset suoraan – se ei ole ajettu reitti. Napauta pistettä nähdäksesi ajan ja paikan.';
+  }
+
+  $('eMapBtn').addEventListener('click', () => {
+    if (eMapOpen()) { eMapToken++; setEMapOpen(false); lsSet(TRIPMAP_KEY, '0'); return; }
+    lsSet(TRIPMAP_KEY, null);
+    showTripMap();
+  });
+
+  // Kutsutaan openEditistä: aikaikkuna ajolle tai kirjaamattomalle välille
+  function prepTripMap(t, gap) {
+    eMapToken++;
+    setEMapOpen(false);
+    eWin = null;
+    if (gap && gap.from && gap.to) eWin = { from: gap.from, to: gap.to, margin: 0 };
+    else if (t && t.startedAt) {
+      const end = t.end != null ? t.endedAt : Date.now();
+      if (end) eWin = { from: t.startedAt, to: end, margin: t.end != null && !t.est ? END_MARGIN_MS : 0 };
+    }
+    const ok = !!eWin && !!srvKey() && eWin.to >= eWin.from && eWin.to - eWin.from <= MAX_WINDOW_MS;
+    $('eMapBtn').hidden = !ok;
+    if (!ok) eWin = null;
+    return ok;
+  }
 
   // ---------- Paikkadialogi ----------
   const pdlg = $('placeDlg');
