@@ -174,6 +174,7 @@
   .places { list-style: none; padding: 0; margin: 8px 0 0; }
   .places li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--line); cursor: pointer; }
   .places .nm { overflow-wrap: anywhere; }
+  .places .lb { color: var(--muted); }
   .places .co { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .places .ed { grid-row: 1 / span 3; grid-column: 2; align-self: center; color: var(--muted); font-size: 14px; }
   .places .ov { font-size: 13px; color: #fbbf24; overflow-wrap: anywhere; }
@@ -396,6 +397,8 @@
     <div class="hint" id="pMapHint">Sininen = tämä paikka, harmaa = muut paikat, punainen = päällekkäin. Napauta karttaa siirtääksesi paikan keskipisteen. Kartta haetaan OpenStreetMapista vain kun avaat sen.</div>
   </div>
   <div id="pNote"></div>
+  <label class="lbl" for="pLabel">Lisäselite (vapaaehtoinen) – erottaa saman selitteen paikat listalla</label>
+  <input type="text" id="pLabel" maxlength="100" autocomplete="off" placeholder="esim. Nastolan Lidl">
   <div class="dlgbtns">
     <button id="pDelete" class="danger">Poista</button>
     <button id="pCancel">Peruuta</button>
@@ -455,6 +458,8 @@
       const r = typeof p.r === 'number' && Number.isFinite(p.r) ? Math.round(p.r) : null;
       const out = { id: typeof p.id === 'string' && /^[a-z0-9]{1,40}$/i.test(p.id) ? p.id : uid(), lat: lat, lon: lon, note: note };
       if (r != null && r >= PLACE_R_MIN && r <= PLACE_R_MAX) out.r = r;
+      const label = typeof p.label === 'string' ? p.label.trim().slice(0, 100) : '';
+      if (label) out.label = label; // lisäselite: vain tunnistamiseen, ei mene ajon selitteeksi
       return out;
     }).filter(Boolean) : [];
     return { trips: clean, presets: presets, places: places };
@@ -677,6 +682,8 @@
     return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
   }
   const placeR = (p) => (p && p.r) || PLACE_RADIUS_M;
+  // Näyttönimi: selite + lisäselite (esim. "Ruokakauppa – Nastolan Lidl")
+  const placeName = (p) => p.label ? p.note + ' – ' + p.label : p.note;
   // Lähin tallennettu paikka, jonka säteen sisällä piste on (exceptId = muokattava paikka itse)
   function nearestPlace(lat, lon, exceptId) {
     let best = null;
@@ -704,7 +711,7 @@
   function overlapText(a, o) {
     const ra = placeR(a), rb = placeR(o.place);
     const maxA = Math.floor(o.d) - rb, maxB = Math.floor(o.d) - ra;
-    let s = '"' + o.place.note + '" (' + Math.round(o.d) + ' m päässä, säde ' + rb + ' m): alueet menevät ' + o.need +
+    let s = '"' + placeName(o.place) + '" (' + Math.round(o.d) + ' m päässä, säde ' + rb + ' m): alueet menevät ' + o.need +
       ' m päällekkäin. Pienennä säteitä yhteensä ' + o.need + ' m';
     const opts = [];
     if (maxA >= PLACE_R_MIN) opts.push('tämän säde ' + maxA + ' m:iin (−' + o.need + ' m)');
@@ -1460,7 +1467,7 @@
     hint.appendChild(a);
     const near = nearestPlace(c.lat, c.lon, placeEditId);
     if (near) {
-      hint.appendChild(document.createTextNode(' · Piste on paikan "' + near.place.note + '" alueella (' + Math.round(near.d) +
+      hint.appendChild(document.createTextNode(' · Piste on paikan "' + placeName(near.place) + '" alueella (' + Math.round(near.d) +
         ' m) – tallennettaessa kysytään, korvataanko se.'));
     }
   }
@@ -1497,6 +1504,7 @@
   }
   $('pCoord').addEventListener('input', () => { pSrcText = ''; updatePlaceHint(); updateOverlap(); drawPlaceMap(true); });
   $('pRadius').addEventListener('input', () => { updateOverlap(); drawPlaceMap(false); });
+  $('pLabel').addEventListener('input', () => drawPlaceMap(false));
 
   // ---------- Kartta: paikan alue (Leaflet + OpenStreetMap) ----------
   // Kirjasto ja karttaruudut ladataan vasta kun käyttäjä avaa kartan: muuten sovellus ei
@@ -1544,14 +1552,15 @@
       if (p.id === placeEditId) return;
       const ov = ovIds.has(p.id);
       const pc = L.circle([p.lat, p.lon], { radius: placeR(p), color: ov ? '#f87171' : '#94a3b8', weight: 2, fillOpacity: ov ? 0.18 : 0.1 })
-        .bindTooltip(textEl(p.note + ' · ' + placeR(p) + ' m')).addTo(pLayer);
+        .bindTooltip(textEl(placeName(p) + ' · ' + placeR(p) + ' m')).addTo(pLayer);
       if (ov) ovCircles.push(pc);
     });
     if (!a) return;
     const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3b82f6';
     const circ = L.circle([a.lat, a.lon], { radius: r, color: accent, weight: 3, fillOpacity: 0.2 }).addTo(pLayer);
     L.circleMarker([a.lat, a.lon], { radius: 5, color: '#fff', weight: 2, fillColor: accent, fillOpacity: 1 }).addTo(pLayer);
-    const label = (placeNote.value || 'Tämä paikka') + ' · ' + r + ' m';
+    const lbl = $('pLabel').value.trim();
+    const label = (placeNote.value || 'Tämä paikka') + (lbl ? ' – ' + lbl : '') + ' · ' + r + ' m';
     circ.bindTooltip(textEl(label), { permanent: true, direction: 'top', offset: [0, -8] });
     // Näytä oma alue ja sen kanssa päällekkäiset alueet kokonaan
     const b = circ.getBounds();
@@ -1636,6 +1645,7 @@
     $('pRadius').value = String(placeR(p));
     placeNote.refresh();
     placeNote.value = p ? p.note : '';
+    $('pLabel').value = p && p.label ? p.label : '';
     $('pDelete').hidden = !p;
     $('pCar').hidden = !srvKey();
     setMapOpen(false);
@@ -1655,7 +1665,7 @@
     const r = readRadius();
     if (Number.isNaN(r)) { toast('Säde: kokonaisluku ' + PLACE_R_MIN + '–' + PLACE_R_MAX + ' m'); $('pRadius').focus(); return; }
     const near = nearestPlace(c.lat, c.lon, placeEditId);
-    if (near && confirm('Piste on paikan "' + near.place.note + '" alueella (' + Math.round(near.d) + ' m, säde ' + placeR(near.place) +
+    if (near && confirm('Piste on paikan "' + placeName(near.place) + '" alueella (' + Math.round(near.d) + ' m, säde ' + placeR(near.place) +
         ' m). Korvataanko se tällä?\n\nPeruuta = säilytä molemmat.')) {
       db.places = db.places.filter((x) => x !== near.place);
     }
@@ -1666,6 +1676,8 @@
     let p = placeEditId ? db.places.find((x) => x.id === placeEditId) : null;
     if (!p) { p = { id: uid() }; db.places.push(p); }
     p.lat = c.lat; p.lon = c.lon; p.note = note.slice(0, 200);
+    const label = $('pLabel').value.trim().slice(0, 100);
+    if (label) p.label = label; else delete p.label;
     if (r === PLACE_RADIUS_M) delete p.r; else p.r = r;
     placeNote.commitPreset();
     save();
@@ -1688,15 +1700,22 @@
       ul.innerHTML = '<li class="empty" style="cursor:default">Ei paikkoja vielä.</li>';
       return;
     }
-    db.places.slice().sort((a, b) => a.note.localeCompare(b.note, 'fi')).forEach((p) => {
+    db.places.slice().sort((a, b) => a.note.localeCompare(b.note, 'fi') || (a.label || '').localeCompare(b.label || '', 'fi')).forEach((p) => {
       const li = document.createElement('li');
       li.innerHTML = '<div class="nm"></div><div class="co"></div><div class="ov"></div><div class="ed">Muokkaa ›</div>';
-      li.querySelector('.nm').textContent = p.note;
+      const nm = li.querySelector('.nm');
+      nm.textContent = p.note;
+      if (p.label) {
+        const sub = document.createElement('span');
+        sub.className = 'lb';
+        sub.textContent = ' – ' + p.label;
+        nm.appendChild(sub);
+      }
       li.querySelector('.co').textContent = fmtCoord(p) + ' · säde ' + placeR(p) + ' m';
       const ov = placeOverlaps(p);
       if (ov.length) {
         li.querySelector('.ov').textContent = '⚠️ Päällekkäin: ' +
-          ov.map((o) => '"' + o.place.note + '" (pienennä yhteensä ' + o.need + ' m)').join(', ');
+          ov.map((o) => '"' + placeName(o.place) + '" (pienennä yhteensä ' + o.need + ' m)').join(', ');
       }
       li.addEventListener('click', () => openPlace(p.id, false));
       ul.appendChild(li);
@@ -1756,7 +1775,7 @@
   // Kanoninen muoto vertailuun (avaimet aakkosjärjestyksessä)
   const canon = (o) => JSON.stringify(o, Object.keys(o).sort());
   const tripDoc = (t) => ({ start: t.start, end: t.end, driver: t.driver, note: t.note, startedAt: t.startedAt, endedAt: t.endedAt, est: !!t.est });
-  const placeDoc = (p) => { const o = { lat: p.lat, lon: p.lon, note: p.note }; if (p.r) o.r = p.r; return o; };
+  const placeDoc = (p) => { const o = { lat: p.lat, lon: p.lon, note: p.note }; if (p.r) o.r = p.r; if (p.label) o.label = p.label; return o; };
   // Kaikki dokumentit: 'kokoelma/id' -> data
   function docsOf(d) {
     const m = new Map();
