@@ -183,13 +183,19 @@
   #pMap { height: 300px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
   #pMap .leaflet-tooltip { font-size: 13px; }
   a { color: #93c5fd; }
+  .hdrbtns { display: flex; gap: 8px; }
+  #cloudBtn.on { background: transparent; color: var(--muted); padding: 0 6px; }
+  #cloudBtn.warn { color: #fbbf24; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header>
   <h1>🚗 Ajopäiväkirja</h1>
-  <button id="installBtn" class="small" hidden>Asenna</button>
+  <div class="hdrbtns">
+    <button id="cloudBtn" class="small">☁ Kirjaudu</button>
+    <button id="installBtn" class="small" hidden>Asenna</button>
+  </div>
 </header>
 
 <nav class="tabs" role="tablist">
@@ -310,6 +316,13 @@
   <section class="card">
     <details>
       <summary>Asetukset, paikat, vakioselitteet ja varmuuskopio</summary>
+      <label class="lbl">Pilvitallennus</label>
+      <div class="hint" style="margin-top:0">Kirjautumalla Googlella ajot, paikat ja vakioselitteet tallentuvat pilveen (Firebase, Helsinki) ja näkyvät kaikilla laitteillasi. Pääsy on vain omistajan tilillä. Ilman kirjautumista tiedot ovat vain tässä laitteessa. Polestar-avain ei mene pilveen.</div>
+      <div class="hint" id="cloudStatus"></div>
+      <div class="btnrow">
+        <button class="small" id="cloudIn">Kirjaudu Googlella</button>
+        <button class="small ghost" id="cloudOut" hidden>Kirjaudu ulos</button>
+      </div>
       <label class="lbl">Paikat (selite sijainnin mukaan)</label>
       <div class="hint" style="margin-top:0">Kun auto on ajon aikana pysäköity paikan säteen sisälle (oletus 150 m, säädettävissä paikoittain), ajolle ehdotetaan paikan selitettä. Päällekkäiset paikat merkitään ⚠️-varoituksella. Vaatii Polestar-palvelun avaimen (auton sijainti).</div>
       <ul class="places" id="placeList"></ul>
@@ -329,7 +342,7 @@
       <label class="lbl">Vakioselitteet</label>
       <ul class="presets" id="presetList"></ul>
       <label class="lbl">Varmuuskopio</label>
-      <div class="hint" style="margin-top:0">Tiedot ovat vain tässä puhelimessa (selaimen paikallinen tallennus). Ota välillä varmuuskopio.</div>
+      <div class="hint" style="margin-top:0">Tiedot ovat tässä laitteessa (ja pilvessä, jos olet kirjautunut). Ota välillä varmuuskopio.</div>
       <div class="btnrow">
         <button class="small" id="exportBtn">Tallenna varmuuskopio</button>
         <button class="small" id="importBtn">Palauta varmuuskopio</button>
@@ -401,6 +414,8 @@
   // ---------- Tallennus (localStorage, sovelluskohtainen avain) ----------
   const STORE_KEY = 'ajopaivakirja:data';
   let db = load();
+  // Pilven tila (logiikka pilviosiossa alempana)
+  const cloud = { fb: null, user: null, ready: false, synced: new Map(), unsubs: [], snaps: {}, pending: false, offline: false, err: '' };
 
   // Tarkistaa ja siistii tiedot (localStorage / varmuuskopio), ettei niiden mukana voi tulla HTML:ää tai roskaa
   function normalize(d) {
@@ -429,8 +444,8 @@
     const presets = Array.isArray(d.presets)
       ? [...new Set(d.presets.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().slice(0, 200)))]
       : [];
-    // Paikat: koordinaatit + selite. Sijainti on henkilötietoa: se pysyy tässä puhelimessa
-    // (ja käyttäjän omassa varmuuskopiossa), sitä ei lähetetä minnekään.
+    // Paikat: koordinaatit + selite. Sijainti on henkilötietoa: se pysyy tässä laitteessa, käyttäjän
+    // omassa varmuuskopiossa ja – vain jos käyttäjä kirjautuu – omistajan Firestore-haarassa (EU).
     const places = Array.isArray(d.places) ? d.places.map((p) => {
       if (!p || typeof p !== 'object') return null;
       const lat = typeof p.lat === 'number' && Number.isFinite(p.lat) && Math.abs(p.lat) <= 90 ? +p.lat.toFixed(6) : null;
@@ -452,9 +467,13 @@
     } catch (e) {}
     return { trips: [], presets: [], places: [] };
   }
-  function save() {
+  function saveLocal() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
     catch (e) { toast('Tallennus epäonnistui!'); }
+  }
+  function save() {
+    saveLocal();
+    cloudPush(); // määritelty pilviosiossa; ei tee mitään ilman kirjautumista
   }
 
   // ---------- Apurit ----------
@@ -1714,6 +1733,260 @@
     }
   });
 
+  // ---------- Pilvisynkronointi (Firebase: Google-kirjautuminen + Firestore, europe-north1) ----------
+  // Firebase ladataan vasta kun käyttäjä on ottanut pilven käyttöön: muuten sovellus ei ota
+  // yhteyttä Googleen. Pääsy rajataan Firestoren säännöissä omistajan tiliin (sääntöjä ei ole
+  // tässä julkisessa koodissa). Rakenne: users/{uid}/trips/{id}, places/{id}, meta/presets.
+  // localStorage on paikallinen kopio, jolla sovellus toimii myös ilman verkkoa.
+  const FB_VER = '11.0.2';
+  const FB_CONFIG = {
+    apiKey: 'AIzaSyAzkqWq4j0nkSxoKkp4HEAnp0PBQqNT7SE',
+    authDomain: 'ajopaivakirja-d884b.firebaseapp.com',
+    projectId: 'ajopaivakirja-d884b',
+    storageBucket: 'ajopaivakirja-d884b.firebasestorage.app',
+    messagingSenderId: '576882194998',
+    appId: '1:576882194998:web:30124a1970a30837313697'
+  };
+  const CLOUD_ON_KEY = 'ajopaivakirja:cloud';       // '1' = pilvi käytössä tällä laitteella
+  const CLOUD_DIRTY_KEY = 'ajopaivakirja:cloudDirty'; // muutoksia tehty kun pilvi ei ollut valmis
+  const CLOUD_MERGED_KEY = 'ajopaivakirja:cloudMerged:'; // + uid: laitteen tiedot yhdistetty pilveen
+  const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} };
+
+  // Kanoninen muoto vertailuun (avaimet aakkosjärjestyksessä)
+  const canon = (o) => JSON.stringify(o, Object.keys(o).sort());
+  const tripDoc = (t) => ({ start: t.start, end: t.end, driver: t.driver, note: t.note, startedAt: t.startedAt, endedAt: t.endedAt, est: !!t.est });
+  const placeDoc = (p) => { const o = { lat: p.lat, lon: p.lon, note: p.note }; if (p.r) o.r = p.r; return o; };
+  // Kaikki dokumentit: 'kokoelma/id' -> data
+  function docsOf(d) {
+    const m = new Map();
+    d.trips.forEach((t) => m.set('trips/' + t.id, tripDoc(t)));
+    d.places.forEach((p) => m.set('places/' + p.id, placeDoc(p)));
+    m.set('meta/presets', { list: d.presets.slice() });
+    return m;
+  }
+  function snapsToDb() {
+    const s = cloud.snaps;
+    const rows = (snap) => snap.docs.map((x) => Object.assign({}, x.data(), { id: x.id }));
+    const meta = s.meta.docs.find((x) => x.id === 'presets');
+    return normalize({ trips: rows(s.trips), places: rows(s.places), presets: meta ? meta.data().list : [] });
+  }
+  // Yhdistää kaksi tietokantaa id:n mukaan (prefer = kumman versio voittaa samalla id:llä)
+  function mergeDb(a, b) {
+    const by = (x, y) => { const m = new Map(); x.forEach((o) => m.set(o.id, o)); y.forEach((o) => m.set(o.id, o)); return [...m.values()]; };
+    return normalize({ trips: by(b.trips, a.trips), places: by(b.places, a.places), presets: [...new Set(b.presets.concat(a.presets))] });
+  }
+
+  async function fbLoad() {
+    if (cloud.fb) return cloud.fb;
+    const base = 'https://www.gstatic.com/firebasejs/' + FB_VER + '/';
+    const [appM, A, F] = await Promise.all([
+      import(base + 'firebase-app.js'), import(base + 'firebase-auth.js'), import(base + 'firebase-firestore.js')
+    ]);
+    const app = appM.initializeApp(FB_CONFIG);
+    const auth = A.getAuth(app);
+    auth.languageCode = 'fi';
+    let fs;
+    try { fs = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
+    catch (e) { fs = F.getFirestore(app); }
+    cloud.fb = { app, auth, fs, A, F };
+    return cloud.fb;
+  }
+
+  // Kirjoittaa pilveen ne dokumentit, jotka poikkeavat viimeksi pilvessä nähdystä
+  function cloudPush() {
+    if (lsGet(CLOUD_ON_KEY) !== '1') return;
+    if (!cloud.ready) { lsSet(CLOUD_DIRTY_KEY, '1'); return; }
+    const { F, fs } = cloud.fb;
+    const uid = cloud.user.uid;
+    const want = docsOf(db);
+    const ops = [];
+    want.forEach((data, key) => { if (cloud.synced.get(key) !== canon(data)) ops.push({ key, data }); });
+    cloud.synced.forEach((_, key) => { if (!want.has(key)) ops.push({ key, data: null }); });
+    if (!ops.length) return;
+    for (let i = 0; i < ops.length; i += 400) {
+      const batch = F.writeBatch(fs);
+      ops.slice(i, i + 400).forEach((op) => {
+        const [col, id] = op.key.split('/');
+        const ref = F.doc(fs, 'users', uid, col, id);
+        if (op.data) { batch.set(ref, op.data); cloud.synced.set(op.key, canon(op.data)); }
+        else { batch.delete(ref); cloud.synced.delete(op.key); }
+      });
+      // Offline-tilassa commit valmistuu vasta yhteyden palattua; paikallinen välimuisti päivittyy heti
+      batch.commit().catch((e) => cloudError(e));
+    }
+  }
+
+  function cloudError(e) {
+    const code = e && e.code || '';
+    if (code === 'permission-denied' || code === 'firestore/permission-denied') {
+      cloud.err = 'Tällä Google-tilillä ei ole pääsyä tietoihin.';
+      toast(cloud.err);
+      cloudSignOut(false);
+      return;
+    }
+    cloud.err = 'Pilvivirhe: ' + (e && e.message || e);
+    updateCloudUi();
+  }
+
+  function onSnap(name, snap) {
+    cloud.snaps[name] = snap;
+    const s = cloud.snaps;
+    cloud.pending = ['trips', 'places', 'meta'].some((k) => s[k] && s[k].metadata.hasPendingWrites);
+    cloud.offline = ['trips', 'places', 'meta'].some((k) => s[k] && s[k].metadata.fromCache);
+    if (!s.trips || !s.places || !s.meta) return;
+    const cloudDb = snapsToDb();
+    if (!cloud.ready) {
+      // Tyhjä välimuisti ilman palvelinyhteyttä ei kerro pilven sisällöstä: odotetaan
+      const empty = !cloudDb.trips.length && !cloudDb.places.length && !cloudDb.presets.length;
+      if (empty && cloud.offline) { updateCloudUi(); return; }
+      const uid = cloud.user.uid;
+      const firstTime = lsGet(CLOUD_MERGED_KEY + uid) !== '1';
+      const dirty = lsGet(CLOUD_DIRTY_KEY) === '1';
+      cloud.synced = new Map([...docsOf(cloudDb)].map(([k, v]) => [k, canon(v)]));
+      cloud.ready = true;
+      let next = cloudDb;
+      if (firstTime) next = mergeDb(cloudDb, db);      // laitteen aiemmat tiedot mukaan pilveen
+      else if (dirty) next = mergeDb(db, cloudDb);     // offline-muutokset voittavat
+      lsSet(CLOUD_MERGED_KEY + uid, '1');
+      lsSet(CLOUD_DIRTY_KEY, null);
+      applyDb(next);
+      cloudPush();
+      if (firstTime && (db.trips.length || db.places.length)) toast('Tiedot synkronoitu pilveen');
+    } else {
+      cloud.synced = new Map([...docsOf(cloudDb)].map(([k, v]) => [k, canon(v)]));
+      applyDb(cloudDb);
+    }
+    updateCloudUi();
+  }
+  // Ottaa uuden tietokannan käyttöön, jos se poikkeaa nykyisestä
+  function applyDb(next) {
+    const same = (a, b) => JSON.stringify([...docsOf(a)].map(([k, v]) => k + canon(v)).sort()) ===
+      JSON.stringify([...docsOf(b)].map(([k, v]) => k + canon(v)).sort());
+    if (same(db, next)) return;
+    db = next;
+    if (justEndedId && !db.trips.some((t) => t.id === justEndedId)) justEndedId = null;
+    saveLocal();
+    refreshNoteFields();
+    render();
+  }
+
+  function startSync(user) {
+    const { F, fs } = cloud.fb;
+    stopSync();
+    cloud.user = user;
+    cloud.err = '';
+    ['trips', 'places', 'meta'].forEach((name) => {
+      cloud.unsubs.push(F.onSnapshot(F.collection(fs, 'users', user.uid, name), { includeMetadataChanges: true },
+        (snap) => onSnap(name, snap), (e) => cloudError(e)));
+    });
+    updateCloudUi();
+  }
+  function stopSync() {
+    cloud.unsubs.forEach((u) => { try { u(); } catch (e) {} });
+    cloud.unsubs = [];
+    cloud.snaps = {};
+    cloud.ready = false;
+    cloud.user = null;
+    cloud.synced = new Map();
+  }
+
+  async function cloudStart() {
+    try {
+      const { A, auth } = await fbLoad();
+      A.onAuthStateChanged(auth, (user) => {
+        if (user) startSync(user);
+        else { stopSync(); updateCloudUi(); }
+      });
+      // Uudelleenohjauksella kirjautuminen (jos ponnahdusikkuna estettiin) palaa tänne
+      A.getRedirectResult(auth).catch((e) => { cloud.err = 'Kirjautuminen epäonnistui: ' + e.message; updateCloudUi(); });
+    } catch (e) {
+      cloud.err = 'Pilvipalvelua ei saatu ladattua (ei verkkoa?). Muutokset tallentuvat laitteelle ja siirtyvät pilveen myöhemmin.';
+      updateCloudUi();
+    }
+  }
+
+  async function cloudSignIn() {
+    lsSet(CLOUD_ON_KEY, '1');
+    cloud.err = '';
+    updateCloudUi();
+    let fb;
+    try { fb = await fbLoad(); }
+    catch (e) { cloud.err = 'Pilvipalvelua ei saatu ladattua. Tarkista verkkoyhteys.'; updateCloudUi(); return; }
+    if (!cloud.unsubs.length && !cloud.started) { cloud.started = true; cloudStart(); }
+    const provider = new fb.A.GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    try {
+      await fb.A.signInWithPopup(fb.auth, provider);
+    } catch (e) {
+      if (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') {
+        try { await fb.A.signInWithRedirect(fb.auth, provider); } catch (e2) { cloud.err = 'Kirjautuminen epäonnistui: ' + e2.message; }
+      } else if (e.code !== 'auth/popup-closed-by-user' && e.code !== 'auth/cancelled-popup-request') {
+        cloud.err = 'Kirjautuminen epäonnistui: ' + e.message;
+      }
+      updateCloudUi();
+    }
+  }
+
+  // wipe: true = poista tiedot myös tästä laitteesta (esim. lainakone)
+  async function cloudSignOut(wipe) {
+    const fb = cloud.fb;
+    stopSync();
+    lsSet(CLOUD_ON_KEY, null);
+    lsSet(CLOUD_DIRTY_KEY, null);
+    if (fb) { try { await fb.A.signOut(fb.auth); } catch (e) {} }
+    if (wipe) {
+      db = { trips: [], presets: [], places: [] };
+      justEndedId = null;
+      saveLocal();
+      if (fb) {
+        try { await fb.F.terminate(fb.fs); await fb.F.clearIndexedDbPersistence(fb.fs); } catch (e) {}
+      }
+      location.reload();
+      return;
+    }
+    updateCloudUi();
+  }
+
+  function updateCloudUi() {
+    const on = lsGet(CLOUD_ON_KEY) === '1';
+    const u = cloud.user;
+    const btn = $('cloudBtn');
+    btn.classList.toggle('on', !!u);
+    btn.classList.toggle('warn', !!u && (cloud.offline || !!cloud.err));
+    let status;
+    if (u) {
+      const state = !cloud.ready ? 'yhdistetään…' : cloud.pending ? 'tallennetaan…' : cloud.offline ? 'offline – synkronoidaan kun yhteys palaa' : 'synkronoitu';
+      btn.textContent = !cloud.ready ? '☁ …' : cloud.pending ? '☁ ↻' : cloud.offline ? '☁ offline' : '☁ ✓';
+      btn.title = 'Pilvi: ' + state;
+      status = 'Kirjautunut: ' + (u.email || u.displayName || 'Google-tili') + ' – ' + state + '.';
+    } else {
+      btn.textContent = on && !cloud.err ? '☁ …' : '☁ Kirjaudu';
+      btn.title = 'Kirjaudu Googlella';
+      status = on && !cloud.err ? 'Yhdistetään pilveen…' : 'Ei kirjautunut – tiedot vain tässä laitteessa.';
+    }
+    if (cloud.err) status += ' ⚠️ ' + cloud.err;
+    $('cloudStatus').textContent = status;
+    $('cloudIn').hidden = !!u;
+    $('cloudOut').hidden = !u && !on;
+  }
+
+  $('cloudBtn').addEventListener('click', () => {
+    if (cloud.user || (lsGet(CLOUD_ON_KEY) === '1' && !cloud.err)) {
+      // Kirjautunut (tai yhdistää): näytä tila asetuksissa
+      document.querySelector('details').open = true;
+      $('cloudStatus').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    cloudSignIn();
+  });
+  $('cloudIn').addEventListener('click', cloudSignIn);
+  $('cloudOut').addEventListener('click', () => {
+    if (!confirm('Kirjaudutaanko ulos pilvestä?')) return;
+    const wipe = confirm('Poistetaanko tiedot myös tästä laitteesta? Pilveen ne jäävät.\n\nOK = poista tästä laitteesta (esim. lainakone)\nPeruuta = säilytä laitteella');
+    cloudSignOut(wipe);
+  });
+
   // ---------- Asennus (PWA) ----------
   const installBtn = $('installBtn');
   function updateInstall() { installBtn.hidden = !window.__installPrompt; }
@@ -1736,6 +2009,8 @@
   }
 
   render();
+  updateCloudUi();
+  if (lsGet(CLOUD_ON_KEY) === '1') { cloud.started = true; cloudStart(); }
 })();
 </script>
 </body>
