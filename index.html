@@ -175,7 +175,13 @@
   .places li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 8px 0; border-top: 1px solid var(--line); cursor: pointer; }
   .places .nm { overflow-wrap: anywhere; }
   .places .co { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .places .ed { grid-row: 1 / span 2; grid-column: 2; align-self: center; color: var(--muted); font-size: 14px; }
+  .places .ed { grid-row: 1 / span 3; grid-column: 2; align-self: center; color: var(--muted); font-size: 14px; }
+  .places .ov { font-size: 13px; color: #fbbf24; overflow-wrap: anywhere; }
+  .places .ov:empty { display: none; }
+  .pwarn { color: #fbbf24; }
+  input.radius { width: 7em; font-variant-numeric: tabular-nums; }
+  #pMap { height: 300px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+  #pMap .leaflet-tooltip { font-size: 13px; }
   a { color: #93c5fd; }
   [hidden] { display: none !important; }
 </style>
@@ -305,7 +311,7 @@
     <details>
       <summary>Asetukset, paikat, vakioselitteet ja varmuuskopio</summary>
       <label class="lbl">Paikat (selite sijainnin mukaan)</label>
-      <div class="hint" style="margin-top:0">Kun auto on ajon aikana pysäköity alle 150 m päähän tallennetusta paikasta, ajolle ehdotetaan paikan selitettä. Vaatii Polestar-palvelun avaimen (auton sijainti).</div>
+      <div class="hint" style="margin-top:0">Kun auto on ajon aikana pysäköity paikan säteen sisälle (oletus 150 m, säädettävissä paikoittain), ajolle ehdotetaan paikan selitettä. Päällekkäiset paikat merkitään ⚠️-varoituksella. Vaatii Polestar-palvelun avaimen (auton sijainti).</div>
       <ul class="places" id="placeList"></ul>
       <div class="btnrow">
         <button class="small" data-place-here>📍 Tallenna selite tälle sijainnille</button>
@@ -368,6 +374,14 @@
     <button class="small" id="pPhone">📱 Puhelimen sijainti</button>
   </div>
   <div class="hint" id="pHint"></div>
+  <label class="lbl" for="pRadius">Säde (m) – selite ehdotetaan, kun auto pysäköidään tämän etäisyyden sisälle</label>
+  <input type="text" class="radius" id="pRadius" inputmode="numeric" autocomplete="off" placeholder="150">
+  <div class="hint" id="pOverlap"></div>
+  <button class="small" id="pMapBtn" style="margin-top:8px">🗺️ Näytä alue kartalla</button>
+  <div id="pMapWrap" hidden>
+    <div id="pMap"></div>
+    <div class="hint" id="pMapHint">Sininen = tämä paikka, harmaa = muut paikat, punainen = päällekkäin. Napauta karttaa siirtääksesi paikan keskipisteen. Kartta haetaan OpenStreetMapista vain kun avaat sen.</div>
+  </div>
   <div id="pNote"></div>
   <div class="dlgbtns">
     <button id="pDelete" class="danger">Poista</button>
@@ -381,6 +395,8 @@
 <script>
 (function () {
   'use strict';
+  // Paikan säde (m): selite ehdotetaan, kun auto pysäköidään säteen sisälle
+  const PLACE_RADIUS_M = 150, PLACE_R_MIN = 10, PLACE_R_MAX = 5000;
 
   // ---------- Tallennus (localStorage, sovelluskohtainen avain) ----------
   const STORE_KEY = 'ajopaivakirja:data';
@@ -421,7 +437,10 @@
       const lon = typeof p.lon === 'number' && Number.isFinite(p.lon) && Math.abs(p.lon) <= 180 ? +p.lon.toFixed(6) : null;
       const note = typeof p.note === 'string' ? p.note.trim().slice(0, 200) : '';
       if (lat == null || lon == null || !note) return null;
-      return { id: typeof p.id === 'string' && /^[a-z0-9]{1,40}$/i.test(p.id) ? p.id : uid(), lat: lat, lon: lon, note: note };
+      const r = typeof p.r === 'number' && Number.isFinite(p.r) ? Math.round(p.r) : null;
+      const out = { id: typeof p.id === 'string' && /^[a-z0-9]{1,40}$/i.test(p.id) ? p.id : uid(), lat: lat, lon: lon, note: note };
+      if (r != null && r >= PLACE_R_MIN && r <= PLACE_R_MAX) out.r = r;
+      return out;
     }).filter(Boolean) : [];
     return { trips: clean, presets: presets, places: places };
   }
@@ -629,7 +648,6 @@
   // Auto lähettää sijainnin pysäköitäessä (ajon aikana näytteitä ei tule), joten ajon
   // aikaikkunan sijaintinäytteet = pysähdyspaikat. Sijaintihistoria haetaan vain omasta
   // Polestar-palvelusta, eikä sitä tallenneta: tähän puhelimeen jäävät vain paikat.
-  const PLACE_RADIUS_M = 150;
   const END_MARGIN_MS = 15 * 60000; // loppupaikan näyte voi tulla hetken ajon päättämisen jälkeen
   const MAX_WINDOW_MS = 31 * 86400000;
 
@@ -639,15 +657,42 @@
     const h = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLon / 2) ** 2;
     return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
   }
-  // Lähin tallennettu paikka säteen sisällä (exceptId = muokattava paikka itse)
-  function nearestPlace(lat, lon, exceptId, radius) {
+  const placeR = (p) => (p && p.r) || PLACE_RADIUS_M;
+  // Lähin tallennettu paikka, jonka säteen sisällä piste on (exceptId = muokattava paikka itse)
+  function nearestPlace(lat, lon, exceptId) {
     let best = null;
     db.places.forEach((p) => {
       if (p.id === exceptId) return;
       const d = distM(lat, lon, p.lat, p.lon);
-      if (d <= (radius || PLACE_RADIUS_M) && (!best || d < best.d)) best = { place: p, d: d };
+      if (d <= placeR(p) && (!best || d < best.d)) best = { place: p, d: d };
     });
     return best;
+  }
+  // Paikat, joiden säde menee päällekkäin annetun paikan (a = {lat, lon, r, id}) kanssa.
+  // need = montako metriä säteitä on pienennettävä yhteensä, jotta alueet eivät mene päällekkäin
+  // (säteet ovat kokonaislukuja, joten ehto on rA + rB <= floor(etäisyys)).
+  function placeOverlaps(a) {
+    const out = [];
+    db.places.forEach((p) => {
+      if (p.id === a.id) return;
+      const d = distM(a.lat, a.lon, p.lat, p.lon);
+      const need = placeR(a) + placeR(p) - Math.floor(d);
+      if (need > 0) out.push({ place: p, d: d, need: need });
+    });
+    return out.sort((x, y) => x.d - y.d);
+  }
+  // Ohjeteksti yhdelle päällekkäisyydelle paikan a näkökulmasta
+  function overlapText(a, o) {
+    const ra = placeR(a), rb = placeR(o.place);
+    const maxA = Math.floor(o.d) - rb, maxB = Math.floor(o.d) - ra;
+    let s = '"' + o.place.note + '" (' + Math.round(o.d) + ' m päässä, säde ' + rb + ' m): alueet menevät ' + o.need +
+      ' m päällekkäin. Pienennä säteitä yhteensä ' + o.need + ' m';
+    const opts = [];
+    if (maxA >= PLACE_R_MIN) opts.push('tämän säde ' + maxA + ' m:iin (−' + o.need + ' m)');
+    if (maxB >= PLACE_R_MIN) opts.push('sen säde ' + maxB + ' m:iin (−' + o.need + ' m)');
+    if (opts.length) s += ', esim. ' + opts.join(' tai ');
+    else s += ' (paikat ovat niin lähellä, että molempia on pienennettävä)';
+    return s + '.';
   }
   // "60.948118, 25.900513" (Google Maps), myös desimaalipilkulla "60,948118, 25,900513",
   // välilyönnillä erotettuna ja osoitteesta "…@60.94,25.90,17z". Desimaaliosa on pakollinen,
@@ -794,7 +839,7 @@
         if (my !== sugToken) return;
         sug.innerHTML = '';
         if (!notes.length) {
-          sug.textContent = '📍 Pysähdyspaikoista ei löytynyt tallennettua paikkaa (säde ' + PLACE_RADIUS_M + ' m). ';
+          sug.textContent = '📍 Pysähdyspaikoista ei löytynyt tallennettua paikkaa (paikkojen säteiden sisältä). ';
           sug.appendChild(lazyButton(from, to, opts, 'Hae uudelleen'));
           return;
         }
@@ -1394,18 +1439,136 @@
     a.rel = 'noopener noreferrer';
     a.textContent = 'Näytä kartalla';
     hint.appendChild(a);
-    const near = nearestPlace(c.lat, c.lon, placeEditId, PLACE_RADIUS_M * 2);
+    const near = nearestPlace(c.lat, c.lon, placeEditId);
     if (near) {
-      hint.appendChild(document.createTextNode(' · Lähellä (' + Math.round(near.d) + ' m) on jo paikka "' + near.place.note + '"' +
-        (near.d <= PLACE_RADIUS_M ? ' – tallennettaessa kysytään, korvataanko se.' : '.')));
+      hint.appendChild(document.createTextNode(' · Piste on paikan "' + near.place.note + '" alueella (' + Math.round(near.d) +
+        ' m) – tallennettaessa kysytään, korvataanko se.'));
     }
   }
-  $('pCoord').addEventListener('input', () => { pSrcText = ''; updatePlaceHint(); });
+  // Säde kentästä: tyhjä = oletus, virheellinen = NaN
+  function readRadius() {
+    const raw = $('pRadius').value.trim();
+    if (!raw) return PLACE_RADIUS_M;
+    if (!/^\d+$/.test(raw)) return NaN;
+    const r = parseInt(raw, 10);
+    return r >= PLACE_R_MIN && r <= PLACE_R_MAX ? r : NaN;
+  }
+  function updateOverlap() {
+    const box = $('pOverlap');
+    box.innerHTML = '';
+    box.classList.remove('pwarn');
+    const r = readRadius();
+    if (Number.isNaN(r)) {
+      box.className = 'hint pwarn';
+      box.textContent = '⚠️ Säde: kokonaisluku ' + PLACE_R_MIN + '–' + PLACE_R_MAX + ' m.';
+      return;
+    }
+    const c = parseCoords($('pCoord').value);
+    if (!c) return;
+    const a = { id: placeEditId, lat: c.lat, lon: c.lon, r: r };
+    const ov = placeOverlaps(a);
+    if (!ov.length) { box.textContent = '✓ Ei päällekkäisyyksiä muiden paikkojen kanssa.'; return; }
+    box.classList.add('pwarn');
+    box.appendChild(document.createTextNode('⚠️ Menee päällekkäin ' + (ov.length > 1 ? ov.length + ' paikan' : 'paikan') + ' kanssa:'));
+    ov.forEach((o) => {
+      const div = document.createElement('div');
+      div.textContent = '• ' + overlapText(a, o);
+      box.appendChild(div);
+    });
+  }
+  $('pCoord').addEventListener('input', () => { pSrcText = ''; updatePlaceHint(); updateOverlap(); drawPlaceMap(true); });
+  $('pRadius').addEventListener('input', () => { updateOverlap(); drawPlaceMap(false); });
 
-  function setPlaceCoords(c, src) {
+  // ---------- Kartta: paikan alue (Leaflet + OpenStreetMap) ----------
+  // Kirjasto ja karttaruudut ladataan vasta kun käyttäjä avaa kartan: muuten sovellus ei
+  // tee ulkoisia pyyntöjä. Karttaruutujen haku paljastaa OSM:lle katsotun alueen.
+  let leafletP = null, pmap = null, pLayer = null;
+  function loadLeaflet() {
+    if (window.L) return Promise.resolve(window.L);
+    if (leafletP) return leafletP;
+    leafletP = new Promise((resolve, reject) => {
+      const css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      css.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+      css.crossOrigin = '';
+      document.head.appendChild(css);
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      s.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+      s.crossOrigin = '';
+      s.onload = () => resolve(window.L);
+      s.onerror = () => { leafletP = null; s.remove(); reject(new Error('Karttaa ei saatu ladattua (onko verkkoyhteys?).')); };
+      document.head.appendChild(s);
+    });
+    return leafletP;
+  }
+  const mapOpen = () => !$('pMapWrap').hidden;
+  function setMapOpen(open) {
+    $('pMapWrap').hidden = !open;
+    $('pMapBtn').textContent = open ? '🗺️ Piilota kartta' : '🗺️ Näytä alue kartalla';
+  }
+  // Leaflet tulkitsee tooltip-merkkijonot HTML:ksi: selitteet annetaan aina tekstisolmuna
+  function textEl(s) { const el = document.createElement('span'); el.textContent = s; return el; }
+  // fit: true = kohdista kartta paikan alueeseen; false = vain jos alue ei mahdu näkymään
+  function drawPlaceMap(fit) {
+    if (!pmap || !mapOpen()) return;
+    const L = window.L;
+    pLayer.clearLayers();
+    const c = parseCoords($('pCoord').value);
+    const r0 = readRadius();
+    const r = Number.isNaN(r0) ? PLACE_RADIUS_M : r0;
+    const a = c ? { id: placeEditId, lat: c.lat, lon: c.lon, r: r } : null;
+    const ovIds = new Set(a ? placeOverlaps(a).map((o) => o.place.id) : []);
+    const ovCircles = [];
+    db.places.forEach((p) => {
+      if (p.id === placeEditId) return;
+      const ov = ovIds.has(p.id);
+      const pc = L.circle([p.lat, p.lon], { radius: placeR(p), color: ov ? '#f87171' : '#94a3b8', weight: 2, fillOpacity: ov ? 0.18 : 0.1 })
+        .bindTooltip(textEl(p.note + ' · ' + placeR(p) + ' m')).addTo(pLayer);
+      if (ov) ovCircles.push(pc);
+    });
+    if (!a) return;
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3b82f6';
+    const circ = L.circle([a.lat, a.lon], { radius: r, color: accent, weight: 3, fillOpacity: 0.2 }).addTo(pLayer);
+    L.circleMarker([a.lat, a.lon], { radius: 5, color: '#fff', weight: 2, fillColor: accent, fillOpacity: 1 }).addTo(pLayer);
+    const label = (placeNote.value || 'Tämä paikka') + ' · ' + r + ' m';
+    circ.bindTooltip(textEl(label), { permanent: true, direction: 'top', offset: [0, -8] });
+    // Näytä oma alue ja sen kanssa päällekkäiset alueet kokonaan
+    const b = circ.getBounds();
+    ovCircles.forEach((pc) => b.extend(pc.getBounds()));
+    if (fit || !pmap.getBounds().contains(circ.getBounds())) pmap.fitBounds(b, { padding: [24, 24], maxZoom: 18 });
+  }
+  $('pMapBtn').addEventListener('click', async () => {
+    if (mapOpen()) { setMapOpen(false); return; }
+    if (!parseCoords($('pCoord').value)) { toast('Anna ensin koordinaatit'); return; }
+    setMapOpen(true);
+    $('pMapHint').hidden = false;
+    let L;
+    try { L = await loadLeaflet(); }
+    catch (e) { setMapOpen(false); toast(e.message); return; }
+    if (!pmap) {
+      pmap = L.map('pMap', { zoomControl: true, attributionControl: true });
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>'
+      }).addTo(pmap);
+      pLayer = L.layerGroup().addTo(pmap);
+      pmap.on('click', (e) => {
+        setPlaceCoords({ lat: +e.latlng.lat.toFixed(6), lon: +e.latlng.lng.toFixed(6) }, '🗺️ Valittu kartalta.', true);
+      });
+      pmap.setView([60.95, 25.9], 15);
+    }
+    pmap.invalidateSize();
+    drawPlaceMap(true);
+  });
+
+  function setPlaceCoords(c, src, noFit) {
     $('pCoord').value = fmtCoord(c);
     pSrcText = src;
     updatePlaceHint();
+    updateOverlap();
+    drawPlaceMap(!noFit);
   }
 
   async function locateCar() {
@@ -1451,11 +1614,14 @@
     pSrcText = '';
     $('placeTitle').textContent = p ? 'Muokkaa paikkaa' : 'Uusi paikka';
     $('pCoord').value = p ? fmtCoord(p) : '';
+    $('pRadius').value = String(placeR(p));
     placeNote.refresh();
     placeNote.value = p ? p.note : '';
     $('pDelete').hidden = !p;
     $('pCar').hidden = !srvKey();
+    setMapOpen(false);
     updatePlaceHint();
+    updateOverlap();
     pdlg.showModal();
     if (locate) { if (srvKey()) locateCar(); else locatePhone(); }
   }
@@ -1467,14 +1633,21 @@
     if (!c) { toast('Anna koordinaatit, esim. 60.948118, 25.900513'); return; }
     const note = placeNote.value;
     if (!note) { toast('Anna selite'); return; }
+    const r = readRadius();
+    if (Number.isNaN(r)) { toast('Säde: kokonaisluku ' + PLACE_R_MIN + '–' + PLACE_R_MAX + ' m'); $('pRadius').focus(); return; }
     const near = nearestPlace(c.lat, c.lon, placeEditId);
-    if (near && confirm('Alle ' + PLACE_RADIUS_M + ' m päässä (' + Math.round(near.d) + ' m) on jo paikka "' + near.place.note +
-        '". Korvataanko se tällä?\n\nPeruuta = säilytä molemmat (lähempi paikka valitaan).')) {
+    if (near && confirm('Piste on paikan "' + near.place.note + '" alueella (' + Math.round(near.d) + ' m, säde ' + placeR(near.place) +
+        ' m). Korvataanko se tällä?\n\nPeruuta = säilytä molemmat.')) {
       db.places = db.places.filter((x) => x !== near.place);
     }
+    const a = { id: placeEditId, lat: c.lat, lon: c.lon, r: r };
+    const ov = placeOverlaps(a);
+    if (ov.length && !confirm('Paikka menee päällekkäin:\n\n' + ov.map((o) => '• ' + overlapText(a, o)).join('\n') +
+        '\n\nTallennetaanko silti? (Päällekkäisellä alueella valitaan lähin paikka.)')) return;
     let p = placeEditId ? db.places.find((x) => x.id === placeEditId) : null;
     if (!p) { p = { id: uid() }; db.places.push(p); }
     p.lat = c.lat; p.lon = c.lon; p.note = note.slice(0, 200);
+    if (r === PLACE_RADIUS_M) delete p.r; else p.r = r;
     placeNote.commitPreset();
     save();
     refreshNoteFields();
@@ -1498,9 +1671,14 @@
     }
     db.places.slice().sort((a, b) => a.note.localeCompare(b.note, 'fi')).forEach((p) => {
       const li = document.createElement('li');
-      li.innerHTML = '<div class="nm"></div><div class="co"></div><div class="ed">Muokkaa ›</div>';
+      li.innerHTML = '<div class="nm"></div><div class="co"></div><div class="ov"></div><div class="ed">Muokkaa ›</div>';
       li.querySelector('.nm').textContent = p.note;
-      li.querySelector('.co').textContent = fmtCoord(p);
+      li.querySelector('.co').textContent = fmtCoord(p) + ' · säde ' + placeR(p) + ' m';
+      const ov = placeOverlaps(p);
+      if (ov.length) {
+        li.querySelector('.ov').textContent = '⚠️ Päällekkäin: ' +
+          ov.map((o) => '"' + o.place.note + '" (pienennä yhteensä ' + o.need + ' m)').join(', ');
+      }
       li.addEventListener('click', () => openPlace(p.id, false));
       ul.appendChild(li);
     });
